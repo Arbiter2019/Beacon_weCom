@@ -1,0 +1,1 @@
+"""WeCom archive service package."""

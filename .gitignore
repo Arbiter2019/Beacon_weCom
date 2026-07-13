@@ -1,0 +1,14 @@
+.DS_Store
+.obsidian/
+.env
+app/weCom/.env
+app/weCom/backend/*.db
+app/weCom/backend/**/__pycache__/
+app/weCom/backend/**/*.pyc
+app/weCom/backend/.pytest_cache/
+app/weCom/backend/.ruff_cache/
+app/weCom/frontend/node_modules/
+app/weCom/frontend/dist/
+app/weCom/frontend/.vite/
+app/weCom/secrets/
+app/weCom/vendor/wecom_sdk/

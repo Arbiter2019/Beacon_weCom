@@ -1,0 +1,82 @@
+:root {
+  --bg: #ededed;
+  --surface: #f7f7f7;
+  --fg: #1a1a1a;
+  --muted: #888;
+  --border: #e0e0e0;
+  --accent: #07c160;
+  --danger: #fa5151;
+  --radius-md: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); }
+button, input { font: inherit; }
+button { cursor: pointer; }
+
+.app-shell { height: 100vh; display: grid; grid-template-rows: 56px 1fr; overflow: hidden; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-mark { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--accent); color: #fff; font-weight: 700; }
+.brand h1, .pane-title h2, .chat-head h2, .detail-card h2 { margin: 0; font-size: 18px; line-height: 1.25; }
+.brand span, .pane-title span, .chat-head span, small, time { color: var(--muted); font-size: 12px; }
+.top-actions { display: flex; gap: 12px; color: var(--muted); font-size: 13px; }
+.sync-pill, .scope-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: #fff; }
+.dot { width: 7px; height: 7px; border-radius: 999px; background: var(--accent); }
+
+.workspace { min-height: 0; display: grid; grid-template-columns: 176px 260px minmax(300px, 360px) minmax(360px, 1fr) 320px; overflow: hidden; }
+.side-menu, .rail, .list-pane, .chat-pane, .detail-pane { min-height: 0; border-right: 1px solid var(--border); background: var(--surface); }
+.side-menu { display: flex; flex-direction: column; gap: 8px; padding: 20px 12px; background: #f1f1f1; }
+.menu-item { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); text-align: left; }
+.menu-item.active { color: var(--accent); border-color: color-mix(in oklab, var(--accent), transparent 70%); background: color-mix(in oklab, var(--accent), transparent 92%); }
+.rail, .list-pane, .detail-pane { padding: 18px 16px; overflow: auto; }
+.pane-title, .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.employee-list, .conversation-list { display: flex; flex-direction: column; gap: 8px; }
+.employee-row, .conversation-row { width: 100%; display: flex; gap: 10px; padding: 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; }
+.employee-row.active, .conversation-row.active { background: #fff; border-color: var(--border); }
+.employee-row span:last-child, .conversation-row div { min-width: 0; display: grid; gap: 2px; }
+.avatar { width: 32px; height: 32px; flex: 0 0 auto; border-radius: 999px; display: grid; place-items: center; background: var(--accent); color: #fff; }
+.conversation-row { flex-direction: column; }
+.conversation-row p { margin: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-box, .message-search { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.search-box input, .message-search input { width: 100%; border: 0; outline: 0; background: transparent; }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 12px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.tabs button { min-height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.tabs button.active { background: var(--accent); color: #fff; }
+.chat-pane { display: grid; grid-template-rows: auto 1fr; padding: 18px; background: #f2f2f2; }
+.timeline { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 4px; }
+.message { max-width: 72%; display: grid; gap: 4px; justify-items: start; }
+.message.mine { align-self: end; justify-items: end; }
+.sender { border: 0; padding: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.bubble { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; line-height: 1.5; }
+.mine .bubble { background: color-mix(in oklab, var(--accent), white 78%); border-color: color-mix(in oklab, var(--accent), white 60%); }
+.bubble.recalled { color: var(--muted); background: #eee; border-style: dashed; }
+.bubble.unsupported { color: #7a5b00; background: #fff8df; border-color: #efd786; }
+.image-message { display: inline-flex; align-items: center; gap: 8px; }
+.detail-card { display: grid; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.detail-card h2 { display: flex; align-items: center; gap: 8px; }
+.detail-card p { margin: 0; color: var(--muted); line-height: 1.6; }
+dl { display: grid; grid-template-columns: 72px 1fr; gap: 10px; margin: 0; font-size: 14px; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+.config-row { display: flex; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--border); }
+.config-row strong { color: var(--accent); }
+
+@media (max-width: 1024px) {
+  .workspace { grid-template-columns: 76px 220px minmax(280px, 1fr); }
+  .side-menu { padding: 12px 8px; }
+  .menu-item { justify-content: center; font-size: 0; }
+  .detail-pane { display: none; }
+}
+
+@media (max-width: 700px) {
+  .topbar { padding: 0 12px; }
+  .brand span, .top-actions { display: none; }
+  .workspace { grid-template-columns: 1fr; grid-template-rows: 54px 180px 1fr; }
+  .side-menu { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); }
+  .menu-item { flex: 1; font-size: 13px; justify-content: center; }
+  .rail { border-right: 0; border-bottom: 1px solid var(--border); }
+  .list-pane { display: none; }
+  .message { max-width: 88%; }
+}

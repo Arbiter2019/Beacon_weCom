@@ -1,0 +1,33 @@
+from wecom_app.models.archive import (
+    Attachment,
+    ConversationViewHistory,
+    CustomerChat,
+    CustomerChatMember,
+    Department,
+    Employee,
+    EmployeeExternalContact,
+    ExternalContact,
+    Message,
+    MessageRecipient,
+    ObservableEmployeeScope,
+    RawEvent,
+    RawMessage,
+    SyncCursor,
+)
+
+__all__ = [
+    "Attachment",
+    "ConversationViewHistory",
+    "CustomerChat",
+    "CustomerChatMember",
+    "Department",
+    "Employee",
+    "EmployeeExternalContact",
+    "ExternalContact",
+    "Message",
+    "MessageRecipient",
+    "ObservableEmployeeScope",
+    "RawEvent",
+    "RawMessage",
+    "SyncCursor",
+]
