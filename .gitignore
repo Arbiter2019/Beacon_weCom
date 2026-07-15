@@ -1,6 +1,10 @@
 .DS_Store
 .obsidian/
 .env
+demo/
+docs/
+spec/
+icon.png
 app/weCom/.env
 app/weCom/backend/*.db
 app/weCom/backend/**/__pycache__/
