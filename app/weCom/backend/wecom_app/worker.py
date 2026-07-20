@@ -1,8 +1,11 @@
+import logging
 import time
 
 from wecom_app.core.config import get_settings
 from wecom_app.db.session import SessionLocal
 from wecom_app.services.sync_jobs import sync_messages_once
+
+logger = logging.getLogger(__name__)
 
 
 def run_once(task_type: str = "message") -> dict:
@@ -16,9 +19,25 @@ def run_once(task_type: str = "message") -> dict:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
+
+    # Create the SDK client once and reuse across poll cycles to avoid
+    # repeatedly spawning subprocesses.
+    from wecom_app.wecom.client import WeComArchiveClient
+    client: WeComArchiveClient | None = None
+    try:
+        client = WeComArchiveClient()
+    except Exception as exc:
+        logger.error("SDK client init failed, will retry each cycle: %s", exc)
+
     while True:
-        run_once("message")
+        try:
+            with SessionLocal() as db:
+                result = sync_messages_once(db, client=client)
+            logger.info("sync result: %s", result)
+        except Exception as exc:
+            logger.error("sync cycle error: %s", exc)
         time.sleep(settings.worker_poll_interval_seconds)
 
 

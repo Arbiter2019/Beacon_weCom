@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: str = "local"
-    api_base_url: str = "http://localhost:8000"
+    api_base_url: str = "http://localhost:8717"
     database_url: str = "sqlite:///./wecom_archive_local.db"
 
     mysql_host: str = "mysql"
@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     wecom_contact_secret: str = ""
     wecom_contact_callback_token: str = ""
     wecom_contact_encoding_aes_key: str = ""
+    wecom_customer_api_secret: str = ""
     wecom_customer_secret: str = ""
     wecom_customer_callback_token: str = ""
     wecom_customer_encoding_aes_key: str = ""
@@ -44,6 +45,10 @@ class Settings(BaseSettings):
             f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
         )
+
+    @property
+    def customer_api_secret(self) -> str:
+        return self.wecom_customer_api_secret or self.wecom_customer_secret
 
 
 @lru_cache

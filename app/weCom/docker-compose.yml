@@ -20,17 +20,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["uvicorn", "wecom_app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "wecom_app.main:app", "--host", "0.0.0.0", "--port", "8717"]
     env_file: .env
     depends_on:
       mysql:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "8717:8717"
     volumes:
       - wecom_attachments:/data/wecom/attachments:ro
 
   wecom-worker:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -48,6 +49,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      args:
+        VITE_INTERNAL_ADMIN_TOKEN: ${INTERNAL_ADMIN_TOKEN}
     depends_on:
       - wecom-api
     ports:

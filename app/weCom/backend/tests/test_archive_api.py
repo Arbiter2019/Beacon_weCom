@@ -11,6 +11,26 @@ def test_lists_observable_employees(client, auth_headers):
     assert response.json()["items"][0]["userid"] == "wang_teacher"
 
 
+def test_imports_observable_employees_csv(client, auth_headers):
+    response = client.post(
+        "/api/observable-employees/import",
+        headers=auth_headers,
+        files={
+            "file": (
+                "employees.csv",
+                "userid,name,department_id,department_name,scope_status\nli_teacher,李老师,101,高中部,enabled\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["imported"] == 1
+    employees = client.get("/api/observable-employees", headers=auth_headers)
+    userids = {item["userid"] for item in employees.json()["items"]}
+    assert "li_teacher" in userids
+
+
 def test_rejects_disabled_observed_user(client, auth_headers):
     response = client.get(
         "/api/observed-employees/disabled_teacher/conversations",

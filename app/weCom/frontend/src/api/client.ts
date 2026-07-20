@@ -15,9 +15,27 @@ async function getJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+async function postFormJson<T>(path: string, formData: FormData): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData
+  });
+  if (!response.ok) {
+    throw new Error(`request failed: ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
 export async function fetchEmployees(): Promise<Employee[]> {
   const data = await getJson<{ items: Employee[] }>('/api/observable-employees', { items: mockEmployees });
   return data.items;
+}
+
+export async function importEmployeesCsv(file: File): Promise<{ imported: number; created: number; updated: number; scoped: number }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return postFormJson('/api/observable-employees/import', formData);
 }
 
 export async function fetchConversations(userid: string, type: string): Promise<Conversation[]> {

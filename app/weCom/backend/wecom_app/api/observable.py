@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -6,6 +9,7 @@ from wecom_app.api.deps import require_admin
 from wecom_app.db.session import get_db
 from wecom_app.models import Department, Employee, ObservableEmployeeScope
 from wecom_app.schemas.archive import ObservableEmployeeOut, ObservableEmployeeUpsert
+from wecom_app.services.employee_import import import_employees_csv
 
 router = APIRouter(prefix="/api/observable-employees", dependencies=[Depends(require_admin)])
 
@@ -59,6 +63,18 @@ def upsert_observable_employee(payload: ObservableEmployeeUpsert, db: Session = 
     scope.scope_reason = payload.scope_reason
     db.commit()
     return {"userid": payload.userid, "scope_status": scope.scope_status}
+
+
+@router.post("/import", response_model=dict)
+async def import_observable_employees(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict:
+    suffix = Path(file.filename or "employees.csv").suffix or ".csv"
+    with NamedTemporaryFile("wb", suffix=suffix, delete=True) as temp_file:
+        temp_file.write(await file.read())
+        temp_file.flush()
+        return import_employees_csv(db, Path(temp_file.name))
 
 
 @router.patch("/{userid}", response_model=dict)

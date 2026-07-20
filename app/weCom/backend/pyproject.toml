@@ -25,6 +25,9 @@ dev = [
 [project.scripts]
 wecomctl = "wecom_app.cli:app"
 
+[tool.setuptools.packages.find]
+include = ["wecom_app*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

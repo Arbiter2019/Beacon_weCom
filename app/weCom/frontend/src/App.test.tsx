@@ -19,6 +19,9 @@ describe('App', () => {
     await userEvent.click(await screen.findByText('观测配置'));
 
     expect(screen.getByText('观测范围配置')).toBeInTheDocument();
-    expect(screen.getByText(/不影响底层通讯录/)).toBeInTheDocument();
+    expect(screen.getByText('员工名单导入')).toBeInTheDocument();
+    expect(screen.getByText('配置名单')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('搜索当前会话')).not.toBeInTheDocument();
+    expect(screen.queryByText('初三数学群')).not.toBeInTheDocument();
   });
 });

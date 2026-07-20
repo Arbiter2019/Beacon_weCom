@@ -6,9 +6,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8000',
-      '/callbacks': 'http://localhost:8000',
-      '/health': 'http://localhost:8000'
+      '/api': 'http://localhost:8717',
+      '/callbacks': 'http://localhost:8717',
+      '/health': 'http://localhost:8717'
     }
   },
   test: {

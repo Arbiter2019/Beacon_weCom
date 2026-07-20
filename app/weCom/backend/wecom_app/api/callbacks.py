@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from wecom_app.core.config import Settings, get_settings
@@ -42,13 +42,14 @@ def verify_callback(
     nonce: str = "",
     echostr: str = "",
     settings: Settings = Depends(get_settings),
-) -> str:
+) -> Response:
     if callback_name not in CALLBACK_SOURCES:
         raise HTTPException(status_code=404, detail="unknown callback")
     crypto = _crypto_for(callback_name, settings)
     if not crypto.verify_signature(msg_signature, timestamp, nonce, echostr):
         raise HTTPException(status_code=403, detail="invalid callback signature")
-    return crypto.decrypt_echo(echostr)
+    # WeCom requires plain text response — no JSON encoding, no quotes, no BOM
+    return Response(content=crypto.decrypt_echo(echostr), media_type="text/plain")
 
 
 @router.post("/{callback_name}")
