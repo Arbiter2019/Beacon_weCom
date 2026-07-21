@@ -10,6 +10,7 @@ from wecom_app.models import (
     ConversationViewHistory,
     CustomerChat,
     CustomerChatMember,
+    Employee,
     EmployeeExternalContact,
     ExternalContact,
     Message,
@@ -150,14 +151,55 @@ def list_conversations(
     return {"items": [item.model_dump() for item in items[:limit]], "next_cursor": None}
 
 
-def _message_out(message: Message) -> MessageOut:
+def _sender_out(db: Session, message: Message, observer_userid: str) -> SenderOut:
+    display_name = message.sender_name
+    avatar = None
+    if message.sender_type == "employee":
+        if message.roomid:
+            member = db.scalar(
+                select(CustomerChatMember).where(
+                    CustomerChatMember.chat_id == message.roomid,
+                    CustomerChatMember.member_userid == message.sender_id,
+                )
+            )
+            if member is not None:
+                display_name = member.group_nickname or member.name or display_name
+        employee = db.scalar(select(Employee).where(Employee.userid == message.sender_id))
+        if employee is not None:
+            display_name = display_name or employee.name
+            avatar = employee.avatar
+    elif message.sender_type == "external_contact":
+        contact = db.scalar(
+            select(ExternalContact).where(ExternalContact.external_userid == message.sender_id)
+        )
+        relation = db.scalar(
+            select(EmployeeExternalContact).where(
+                EmployeeExternalContact.userid == observer_userid,
+                EmployeeExternalContact.external_userid == message.sender_id,
+            )
+        )
+        display_name = (
+            (relation.remark if relation is not None else None)
+            or (contact.name if contact is not None else None)
+            or display_name
+        )
+        avatar = contact.avatar if contact is not None else None
+    return SenderOut(
+        id=message.sender_id,
+        type=message.sender_type,
+        display_name=display_name or message.sender_id,
+        avatar=avatar,
+    )
+
+
+def _message_out(db: Session, message: Message, observer_userid: str) -> MessageOut:
     attachment = message.attachments[0] if message.attachments else None
     return MessageOut(
         message_id=message.id,
         msgid=message.msgid,
         msg_type=message.msg_type,
         is_supported=message.is_supported,
-        sender=SenderOut(id=message.sender_id, type=message.sender_type, display_name=message.sender_name),
+        sender=_sender_out(db, message, observer_userid),
         content=MessageContentOut(
             text=_message_summary(message),
             link=(
@@ -170,6 +212,11 @@ def _message_out(message: Message) -> MessageOut:
                     "attachment_id": attachment.id,
                     "type": attachment.attachment_type,
                     "download_status": attachment.download_status,
+                    "url": (
+                        f"/api/attachments/{attachment.id}/content"
+                        if attachment.download_status == "downloaded"
+                        else None
+                    ),
                 }
                 if attachment
                 else None
@@ -196,7 +243,13 @@ def list_student_messages(userid: str, external_userid: str, limit: int = 50, db
         .order_by(Message.msg_time.asc())
         .limit(limit)
     )
-    return {"items": [_message_out(message).model_dump() for message in db.scalars(stmt).all()], "next_cursor": None}
+    return {
+        "items": [
+            _message_out(db, message, userid).model_dump()
+            for message in db.scalars(stmt).all()
+        ],
+        "next_cursor": None,
+    }
 
 
 @router.get("/customer-chat-conversations/{chat_id}/messages", response_model=dict)
@@ -216,7 +269,13 @@ def list_chat_messages(userid: str, chat_id: str, limit: int = 50, db: Session =
         .order_by(Message.msg_time.asc())
         .limit(limit)
     )
-    return {"items": [_message_out(message).model_dump() for message in db.scalars(stmt).all()], "next_cursor": None}
+    return {
+        "items": [
+            _message_out(db, message, userid).model_dump()
+            for message in db.scalars(stmt).all()
+        ],
+        "next_cursor": None,
+    }
 
 
 @router.get("/conversations/{conversation_type}/{conversation_id}/message-search", response_model=dict)
@@ -247,7 +306,13 @@ def search_current_conversation(
     if sender_id:
         stmt = stmt.where(Message.sender_id == sender_id)
     stmt = stmt.order_by(desc(Message.msg_time)).limit(limit)
-    return {"items": [_message_out(message).model_dump() for message in db.scalars(stmt).all()], "next_cursor": None}
+    return {
+        "items": [
+            _message_out(db, message, userid).model_dump()
+            for message in db.scalars(stmt).all()
+        ],
+        "next_cursor": None,
+    }
 
 
 @router.post("/conversation-view-history", response_model=dict)

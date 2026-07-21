@@ -35,7 +35,10 @@ class Settings(BaseSettings):
     attachment_storage_root: Path = Path("/data/wecom/attachments")
     internal_admin_token: str = Field(default="dev-admin-token")
 
-    worker_poll_interval_seconds: int = 30
+    worker_poll_interval_seconds: float = 0.01
+    message_sync_batch_limit: int = 1000
+    message_bootstrap_max_batches: int = 200
+    message_sync_newest_first: bool = True
 
     @property
     def effective_database_url(self) -> str:

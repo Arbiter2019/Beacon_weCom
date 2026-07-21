@@ -58,7 +58,8 @@ def auth_headers() -> dict[str, str]:
 
 def seed_data(db: Session) -> None:
     teacher = Employee(userid="wang_teacher", name="小王老师", main_department_id=1)
-    db.add(teacher)
+    disabled_teacher = Employee(userid="disabled_teacher", name="停用老师", main_department_id=1)
+    db.add_all([teacher, disabled_teacher])
     db.add(ObservableEmployeeScope(userid="wang_teacher", scope_status="enabled"))
     db.add(ObservableEmployeeScope(userid="disabled_teacher", scope_status="disabled"))
     contact = ExternalContact(external_userid="external_xiaoyu", name="小雨", avatar="")

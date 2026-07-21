@@ -7,6 +7,8 @@ export type Employee = {
   conversation_count: number;
 };
 
+export type DirectoryEmployee = Employee;
+
 export type Conversation = {
   conversation_type: 'student' | 'customer_chat';
   external_userid?: string | null;
@@ -37,7 +39,7 @@ export type Message = {
   content: {
     text?: string | null;
     link?: { title?: string | null; url?: string | null; description?: string | null } | null;
-    attachment?: { attachment_id: number; type: string; download_status: string } | null;
+    attachment?: { attachment_id: number; type: string; download_status: string; url?: string | null } | null;
   };
   msg_time: string;
   is_recalled: boolean;

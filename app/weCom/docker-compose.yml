@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: mysql:8.4
+    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/library/mysql:8.4
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-wecom_archive}
       MYSQL_USER: ${MYSQL_USER:-wecom}
@@ -17,9 +17,12 @@ services:
       retries: 10
 
   wecom-api:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.m.daocloud.io}
     command: ["uvicorn", "wecom_app.main:app", "--host", "0.0.0.0", "--port", "8717"]
     env_file: .env
     depends_on:
@@ -29,12 +32,16 @@ services:
       - "8717:8717"
     volumes:
       - wecom_attachments:/data/wecom/attachments:ro
+      - ./secrets/wecom_archive_private_key.pem:/run/secrets/wecom_archive_private_key.pem:ro
+      - ./vendor/wecom_sdk:/opt/wecom_sdk:ro
 
   wecom-worker:
     platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.m.daocloud.io}
     command: ["python", "-m", "wecom_app.worker"]
     env_file: .env
     depends_on:
@@ -50,6 +57,7 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
+        DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.m.daocloud.io}
         VITE_INTERNAL_ADMIN_TOKEN: ${INTERNAL_ADMIN_TOKEN}
     depends_on:
       - wecom-api

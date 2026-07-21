@@ -15,6 +15,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router)
     app.include_router(observable.router)
+    app.include_router(observable.directory_router)
     app.include_router(conversations.router)
     app.include_router(attachments.router)
     app.include_router(callbacks.router)
