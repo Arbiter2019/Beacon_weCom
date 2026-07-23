@@ -1164,6 +1164,14 @@ p {
   color: var(--muted);
 }
 
+.modal-visual img {
+  display: block;
+  max-width: 100%;
+  max-height: min(64vh, 560px);
+  object-fit: contain;
+  border-radius: 6px;
+}
+
 @media (max-width: 1180px) {
   .workspace {
     grid-template-columns: 156px 236px 320px minmax(0, 1fr);

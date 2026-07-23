@@ -145,11 +145,11 @@ li_teacher,李老师,,,,,,1,101,高中部,enabled,initial import
 最小必填字段是 `userid`。如果提供 `department_id` 和 `department_name`，会创建或更新部门；如果提供 `scope_status`，会写入可观测名单，取值只能是 `enabled` 或 `disabled`。
 
 也可以通过 HTTP 上传：
-
+enable
 ```bash
-curl -X POST http://localhost:8717/api/observable-employees/import \
+curl -X POST http://101.132.83.149:8717/api/observable-employees/import \
   -H "Authorization: Bearer $INTERNAL_ADMIN_TOKEN" \
-  -F "file=@employees.csv"
+  -F "file=@test.csv"
 ```
 
 CSV 导入入口不放在前端主界面。它是通讯录回调/API 暂不可用时的 CLI 或 HTTP 备用能力。

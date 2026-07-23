@@ -7,12 +7,21 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from wecom_app.models import Employee, EmployeeExternalContact, ExternalContact, ObservableEmployeeScope
+from wecom_app.models import (
+    CustomerChat,
+    CustomerChatMember,
+    Employee,
+    EmployeeExternalContact,
+    ExternalContact,
+    ObservableEmployeeScope,
+)
 from wecom_app.wecom.customer_client import WeComAPIError, WeComCustomerClient
 
 logger = logging.getLogger(__name__)
 CONTACTS_SYNC_LOCK_NAME = "wecom_sync_external_contacts"
 CONTACTS_SYNC_LOCK_TIMEOUT_SECONDS = 60
+CUSTOMER_CHAT_SYNC_LOCK_NAME = "wecom_sync_customer_chats"
+CUSTOMER_CHAT_SYNC_LOCK_TIMEOUT_SECONDS = 60
 
 
 @contextmanager
@@ -35,6 +44,28 @@ def _contacts_sync_lock(db: Session):
     finally:
         if acquired == 1:
             db.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": CONTACTS_SYNC_LOCK_NAME})
+
+
+@contextmanager
+def _customer_chat_sync_lock(db: Session):
+    bind = db.get_bind()
+    dialect_name = bind.dialect.name if bind is not None else ""
+    if dialect_name not in {"mysql", "mariadb"}:
+        yield True
+        return
+
+    acquired = db.scalar(
+        text("SELECT GET_LOCK(:lock_name, :timeout_seconds)"),
+        {
+            "lock_name": CUSTOMER_CHAT_SYNC_LOCK_NAME,
+            "timeout_seconds": CUSTOMER_CHAT_SYNC_LOCK_TIMEOUT_SECONDS,
+        },
+    )
+    try:
+        yield acquired == 1
+    finally:
+        if acquired == 1:
+            db.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": CUSTOMER_CHAT_SYNC_LOCK_NAME})
 
 
 def _upsert_external_contact(
@@ -179,3 +210,118 @@ def sync_external_contacts(
             "synced_contacts": synced_contacts,
             "errors": errors,
         }
+
+
+def _upsert_customer_chat(db: Session, chat_data: dict) -> CustomerChat:
+    chat_id = chat_data["chat_id"]
+    chat = db.scalar(select(CustomerChat).where(CustomerChat.chat_id == chat_id))
+    if chat is None:
+        chat = CustomerChat(chat_id=chat_id)
+        db.add(chat)
+    chat.name = chat_data.get("name")
+    chat.owner_userid = chat_data.get("owner")
+    chat.notice = chat_data.get("notice")
+    chat.member_count = len(chat_data.get("member_list", []) or [])
+    admins = [item.get("userid") for item in chat_data.get("admin_list", []) if item.get("userid")]
+    chat.admin_userids = admins
+    create_time = chat_data.get("create_time")
+    if create_time:
+        chat.create_time = datetime.utcfromtimestamp(int(create_time))
+        chat.create_time_ms = int(create_time) * 1000
+    chat.status = "active"
+    chat.raw_payload = chat_data
+    chat.last_synced_at = datetime.utcnow()
+    return chat
+
+
+def _upsert_customer_chat_member(db: Session, chat_id: str, member_data: dict) -> None:
+    member_userid = member_data.get("userid")
+    if not member_userid:
+        return
+    member_type = "employee" if member_data.get("type") == 1 else "external_contact"
+    member = db.scalar(
+        select(CustomerChatMember).where(
+            CustomerChatMember.chat_id == chat_id,
+            CustomerChatMember.member_userid == member_userid,
+        )
+    )
+    if member is None:
+        member = CustomerChatMember(chat_id=chat_id, member_userid=member_userid, member_type=member_type)
+        db.add(member)
+    member.member_type = member_type
+    member.name = member_data.get("name")
+    member.group_nickname = member_data.get("group_nickname") or member_data.get("nickname")
+    join_time = member_data.get("join_time")
+    if join_time:
+        member.join_time = datetime.utcfromtimestamp(int(join_time))
+        member.join_time_ms = int(join_time) * 1000
+    member.role = "owner" if member_data.get("role") == 1 else "member"
+    member.invitor_userid = member_data.get("invitor_userid")
+    member.is_active = True
+    member.left_at = None
+    member.raw_payload = member_data
+    member.last_synced_at = datetime.utcnow()
+
+
+def sync_customer_chats(
+    db: Session,
+    client: WeComCustomerClient,
+    owner_userids: list[str] | None = None,
+) -> dict[str, int | list[dict]]:
+    with _customer_chat_sync_lock(db) as lock_acquired:
+        if not lock_acquired:
+            return {
+                "synced_owners": 0,
+                "synced_chats": 0,
+                "errors": [{"lock": CUSTOMER_CHAT_SYNC_LOCK_NAME, "error": "customer chat sync lock timeout"}],
+            }
+
+        if owner_userids is None:
+            owner_userids = list(
+                db.scalars(
+                    select(ObservableEmployeeScope.userid).where(
+                        ObservableEmployeeScope.scope_status == "enabled"
+                    )
+                )
+            )
+
+        errors: list[dict] = []
+        synced_chats = 0
+        seen_chat_ids: set[str] = set()
+
+        for owner_userid in owner_userids:
+            cursor = ""
+            while True:
+                try:
+                    payload = client.list_customer_chats(owner_userid, cursor)
+                except WeComAPIError as e:
+                    logger.warning("list_customer_chats failed for %s: %s", owner_userid, e)
+                    errors.append({"userid": owner_userid, "error": str(e)})
+                    break
+
+                for item in payload.get("group_chat_list", []):
+                    chat_id = item.get("chat_id")
+                    if not chat_id or chat_id in seen_chat_ids:
+                        continue
+                    seen_chat_ids.add(chat_id)
+                    try:
+                        detail = client.get_customer_chat(chat_id)
+                    except WeComAPIError as e:
+                        logger.warning("get_customer_chat failed for %s: %s", chat_id, e)
+                        errors.append({"chat_id": chat_id, "error": str(e)})
+                        continue
+
+                    chat_data = detail.get("group_chat", {})
+                    chat_data.setdefault("chat_id", chat_id)
+                    _upsert_customer_chat(db, chat_data)
+                    for member_data in chat_data.get("member_list", []) or []:
+                        _upsert_customer_chat_member(db, chat_id, member_data)
+                    synced_chats += 1
+
+                next_cursor = payload.get("next_cursor") or ""
+                if not next_cursor or next_cursor == cursor:
+                    break
+                cursor = next_cursor
+
+        db.commit()
+        return {"synced_owners": len(owner_userids), "synced_chats": synced_chats, "errors": errors}

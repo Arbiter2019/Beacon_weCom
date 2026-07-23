@@ -25,9 +25,9 @@ class Slice(ctypes.Structure):
 
 class MediaData(ctypes.Structure):
     _fields_ = [
-        ("outindexbuf", ctypes.c_char_p),
+        ("outindexbuf", ctypes.c_void_p),
         ("out_len", ctypes.c_int),
-        ("data", ctypes.c_char_p),
+        ("data", ctypes.c_void_p),
         ("data_len", ctypes.c_int),
         ("is_finish", ctypes.c_int),
     ]
@@ -200,7 +200,7 @@ def _download_media(lib, sdk, sdkfileid: str) -> bytes:
                 chunks.append(ctypes.string_at(m.data, m.data_len))
             if m.is_finish:
                 break
-            index = m.outindexbuf or b""
+            index = ctypes.string_at(m.outindexbuf, m.out_len) if m.outindexbuf and m.out_len > 0 else b""
         finally:
             lib.FreeMediaData(md)
     return b"".join(chunks)

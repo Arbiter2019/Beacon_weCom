@@ -61,3 +61,12 @@ class WeComCustomerClient:
     def get_external_contact(self, external_userid: str) -> dict:
         """Return full detail of one external contact including follow_user list."""
         return _get(self._url(f"/cgi-bin/externalcontact/get?external_userid={urllib.parse.quote(external_userid)}"))
+
+    def list_customer_chats(self, userid: str | None = None, cursor: str = "", limit: int = 1000) -> dict:
+        payload: dict = {"status_filter": 0, "cursor": cursor, "limit": limit}
+        if userid:
+            payload["owner_filter"] = {"userid_list": [userid]}
+        return _post(self._url("/cgi-bin/externalcontact/groupchat/list"), payload)
+
+    def get_customer_chat(self, chat_id: str, need_name: int = 1) -> dict:
+        return _post(self._url("/cgi-bin/externalcontact/groupchat/get"), {"chat_id": chat_id, "need_name": need_name})

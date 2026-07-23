@@ -54,10 +54,28 @@ def _latest_single_message(db: Session, userid: str, external_userid: str) -> Me
         .join(MessageRecipientAlias, MessageRecipientAlias.message_id == Message.id)
         .order_by(desc(Message.msg_time))
         .limit(1)
-    )
+)
 
 
 from wecom_app.models import MessageRecipient as MessageRecipientAlias  # noqa: E402
+
+
+def _employee_display(db: Session, userid: str | None) -> tuple[str | None, str | None]:
+    if not userid:
+        return None, None
+    employee = db.scalar(select(Employee).where(Employee.userid == userid))
+    if employee is None:
+        return userid, None
+    return employee.name or employee.userid, employee.avatar
+
+
+def _external_contact_display(db: Session, external_userid: str | None) -> tuple[str | None, str | None]:
+    if not external_userid:
+        return None, None
+    contact = db.scalar(select(ExternalContact).where(ExternalContact.external_userid == external_userid))
+    if contact is None:
+        return external_userid, None
+    return contact.name or contact.external_userid, contact.avatar
 
 
 @router.get("/conversations", response_model=dict)
@@ -143,7 +161,7 @@ def list_conversations(
                     last_viewed_at=history.last_viewed_at if history else None,
                     sort_basis="last_viewed" if history else "last_message",
                     member_count=chat.member_count,
-                    owner_name=chat.owner_userid,
+                    owner_name=_employee_display(db, chat.owner_userid)[0],
                     observer_role=member.role,
                 )
             )
@@ -384,10 +402,24 @@ def chat_detail(userid: str, chat_id: str, db: Session = Depends(get_db)) -> Cus
         members=[
             {
                 "member_userid": member.member_userid,
-                "name": member.group_nickname or member.name or member.member_userid,
+                "name": (
+                    member.group_nickname
+                    or (
+                        _employee_display(db, member.member_userid)[0]
+                        if member.member_type == "employee"
+                        else _external_contact_display(db, member.member_userid)[0]
+                    )
+                    or member.name
+                    or member.member_userid
+                ),
                 "member_type": member.member_type,
                 "role": member.role,
                 "is_active": member.is_active,
+                "avatar": (
+                    _employee_display(db, member.member_userid)[1]
+                    if member.member_type == "employee"
+                    else _external_contact_display(db, member.member_userid)[1]
+                ),
             }
             for member in members
         ],

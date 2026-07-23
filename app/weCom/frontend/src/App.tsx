@@ -24,6 +24,7 @@ import type { Conversation, DirectoryEmployee, Employee, Message } from './api/t
 type ProductView = 'archive' | 'config';
 type ConversationFilter = 'all' | 'student' | 'group';
 type MobileArchiveView = 'scope' | 'list' | 'chat';
+const assetToken = import.meta.env.VITE_INTERNAL_ADMIN_TOKEN || 'dev-admin-token';
 
 function fmt(value?: string | null) {
   if (!value) return '—';
@@ -67,6 +68,12 @@ function messageText(message: Message) {
   if (message.is_recalled) return '该消息已被撤回';
   if (!message.is_supported) return message.content.text || `暂不支持的 ${message.msg_type} 消息`;
   return message.content.text || message.content.link?.title || message.content.attachment?.type || '';
+}
+
+function authenticatedAssetUrl(url?: string | null) {
+  if (!url) return null;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}token=${encodeURIComponent(assetToken)}`;
 }
 
 export default function App() {
@@ -460,6 +467,7 @@ export default function App() {
                   messages.map((message) => {
                     const senderName = message.sender.display_name || message.sender.id;
                     const side = message.sender.id === selectedEmployee?.userid ? 'self' : 'other';
+                    const imageUrl = authenticatedAssetUrl(message.content.attachment?.url);
                     return (
                       <article className={`message ${side}`} data-message-id={message.msgid} key={message.msgid}>
                         <Avatar name={senderName} src={message.sender.avatar} />
@@ -467,9 +475,9 @@ export default function App() {
                           <span className="sender-line">{senderName}</span>
                           {message.is_recalled ? (
                             <div className="bubble">该消息已被撤回 <span className="badge status-neutral">已撤回</span></div>
-                          ) : message.content.attachment?.url ? (
-                            <button className="bubble image-bubble image-preview-bubble" onClick={() => setImagePreview(message.content.attachment?.url || null)}>
-                              <img alt={`${senderName} 的图片消息`} src={message.content.attachment.url} />
+                          ) : imageUrl ? (
+                            <button className="bubble image-bubble image-preview-bubble" onClick={() => setImagePreview(imageUrl)}>
+                              <img alt={`${senderName} 的图片消息`} src={imageUrl} />
                             </button>
                           ) : message.content.attachment ? (
                             <button className="bubble image-bubble" onClick={() => setImagePreview(message.content.attachment?.type || '图片消息')}>
@@ -737,8 +745,9 @@ export default function App() {
             <h2>图片消息预览</h2>
             <button className="btn" onClick={() => setImagePreview(null)}>关闭</button>
           </div>
-          <div className="modal-visual">OSS 图片预览区域</div>
-          <p className="muted">来源字段：{imagePreview}</p>
+          <div className="modal-visual">
+            {imagePreview ? <img alt="图片消息预览" src={imagePreview} /> : null}
+          </div>
         </div>
       </div>
     </div>

@@ -70,6 +70,60 @@ def test_lists_student_conversation_and_messages(client, auth_headers):
     assert messages.json()["items"][0]["content"]["text"] == "先看交点"
 
 
+def test_group_conversation_owner_uses_employee_name(db, client, auth_headers):
+    from wecom_app.models import CustomerChat, Employee
+
+    db.add(Employee(userid="XiaoHaiYan_3", name="小海燕老师", avatar="https://example.test/xhy.png"))
+    chat = db.query(CustomerChat).filter_by(chat_id="chat_math").one()
+    chat.owner_userid = "XiaoHaiYan_3"
+    db.commit()
+
+    response = client.get(
+        "/api/observed-employees/wang_teacher/conversations?type=customer_chat",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["owner_name"] == "小海燕老师"
+
+
+def test_group_detail_resolves_employee_and_external_member_names(db, client, auth_headers):
+    from wecom_app.models import CustomerChatMember, Employee, ExternalContact
+
+    db.add(Employee(userid="li_teacher", name="李老师", avatar="https://example.test/li.png"))
+    db.add(ExternalContact(external_userid="wm_student", name="微信昵称", avatar="https://example.test/wm.png"))
+    db.add(
+        CustomerChatMember(
+            chat_id="chat_math",
+            member_userid="li_teacher",
+            member_type="employee",
+            role="member",
+        )
+    )
+    db.add(
+        CustomerChatMember(
+            chat_id="chat_math",
+            member_userid="wm_student",
+            member_type="external_contact",
+            group_nickname="群昵称",
+            role="member",
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        "/api/observed-employees/wang_teacher/customer-chats/chat_math",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    members = {item["member_userid"]: item for item in response.json()["members"]}
+    assert members["li_teacher"]["name"] == "李老师"
+    assert members["li_teacher"]["avatar"] == "https://example.test/li.png"
+    assert members["wm_student"]["name"] == "群昵称"
+    assert members["wm_student"]["avatar"] == "https://example.test/wm.png"
+
+
 def test_group_message_sender_uses_actual_employee_identity(db, client, auth_headers):
     from datetime import datetime
 

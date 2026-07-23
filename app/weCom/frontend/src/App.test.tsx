@@ -114,7 +114,12 @@ describe('App', () => {
     render(<App />);
 
     const image = await screen.findByRole('img', { name: '沈晓雨 的图片消息' });
-    expect(image).toHaveAttribute('src', '/api/attachments/1/content');
+    expect(image).toHaveAttribute('src', '/api/attachments/1/content?token=dev-admin-token');
+    await userEvent.click(image);
+    expect(screen.getByRole('img', { name: '图片消息预览' })).toHaveAttribute(
+      'src',
+      '/api/attachments/1/content?token=dev-admin-token'
+    );
     expect(screen.getByRole('img', { name: '沈晓雨' })).toHaveAttribute(
       'src',
       'https://example.test/xiaoyu.png'
