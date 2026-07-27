@@ -6,3 +6,4 @@ backend/**/*.pyc
 backend/*.egg-info
 .git
 .DS_Store
+PRD.md
