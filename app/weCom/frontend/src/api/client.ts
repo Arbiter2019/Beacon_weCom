@@ -1,4 +1,4 @@
-import type { Conversation, DirectoryEmployee, Employee, Message } from './types';
+import type { Attachment, Conversation, ConversationPage, DirectoryEmployee, Employee, MessagePage } from './types';
 
 const token = import.meta.env.VITE_INTERNAL_ADMIN_TOKEN || 'dev-admin-token';
 
@@ -64,19 +64,34 @@ export async function importEmployeesCsv(file: File): Promise<{ imported: number
   return postFormJson('/api/observable-employees/import', formData);
 }
 
-export async function fetchConversations(userid: string, type: string): Promise<Conversation[]> {
-  const data = await getJson<{ items: Conversation[] }>(
-    `/api/observed-employees/${userid}/conversations?type=${type}`,
-    { items: [] }
+export async function fetchConversations(
+  userid: string,
+  type: string,
+  cursor?: string | null
+): Promise<ConversationPage> {
+  const params = new URLSearchParams({ type });
+  if (cursor) params.set('cursor', cursor);
+  return getJson<ConversationPage>(
+    `/api/observed-employees/${userid}/conversations?${params.toString()}`,
+    { items: [], next_cursor: null }
   );
-  return data.items;
 }
 
-export async function fetchMessages(userid: string, conversation: Conversation): Promise<Message[]> {
+export async function fetchMessages(
+  userid: string,
+  conversation: Conversation,
+  cursor?: string | null
+): Promise<MessagePage> {
+  const params = new URLSearchParams();
+  if (cursor) params.set('cursor', cursor);
+  const query = params.toString() ? `?${params.toString()}` : '';
   const path =
     conversation.conversation_type === 'student'
-      ? `/api/observed-employees/${userid}/student-conversations/${conversation.external_userid}/messages`
-      : `/api/observed-employees/${userid}/customer-chat-conversations/${conversation.chat_id}/messages`;
-  const data = await getJson<{ items: Message[] }>(path, { items: [] });
-  return data.items;
+      ? `/api/observed-employees/${userid}/student-conversations/${conversation.external_userid}/messages${query}`
+      : `/api/observed-employees/${userid}/customer-chat-conversations/${conversation.chat_id}/messages${query}`;
+  return getJson<MessagePage>(path, { items: [], next_cursor: null });
+}
+
+export async function triggerAttachmentDownload(attachmentId: number): Promise<Attachment> {
+  return postJson<Attachment>(`/api/attachments/${attachmentId}/download`, {});
 }

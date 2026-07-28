@@ -59,8 +59,10 @@ def health() -> None:
         "api_base_url": settings.api_base_url,
         "sdk_dir_exists": settings.wecom_sdk_lib_dir.exists(),
         "private_key_exists": settings.wecom_archive_private_key_path.exists(),
-        "attachment_root": str(settings.attachment_storage_root),
-        "attachment_root_exists": settings.attachment_storage_root.exists(),
+        "attachment_storage_backend": settings.attachment_storage_backend,
+        "aliyun_oss_bucket": settings.aliyun_oss_bucket,
+        "aliyun_oss_prefix": settings.aliyun_oss_prefix_normalized,
+        "aliyun_oss_internal_endpoint": settings.aliyun_oss_internal_endpoint,
     }
     typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 

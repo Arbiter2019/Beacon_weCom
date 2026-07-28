@@ -78,12 +78,17 @@ def _external_contact_display(db: Session, external_userid: str | None) -> tuple
     return contact.name or contact.external_userid, contact.avatar
 
 
+def _conversation_cursor(item: ConversationOut) -> str:
+    return f"{item.conversation_type}:{item.external_userid or item.chat_id}"
+
+
 @router.get("/conversations", response_model=dict)
 def list_conversations(
     userid: str,
     type: str = "all",
     keyword: str = "",
     limit: int = Query(default=30, le=100),
+    cursor: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     items: list[ConversationOut] = []
@@ -166,7 +171,18 @@ def list_conversations(
                 )
             )
     items.sort(key=lambda item: item.last_viewed_at or item.last_message_time or datetime.min, reverse=True)
-    return {"items": [item.model_dump() for item in items[:limit]], "next_cursor": None}
+    start_index = 0
+    if cursor:
+        for index, item in enumerate(items):
+            if _conversation_cursor(item) == cursor:
+                start_index = index + 1
+                break
+    page_items = items[start_index:start_index + limit]
+    has_next_page = start_index + limit < len(items)
+    return {
+        "items": [item.model_dump() for item in page_items],
+        "next_cursor": _conversation_cursor(page_items[-1]) if has_next_page and page_items else None,
+    }
 
 
 def _sender_out(db: Session, message: Message, observer_userid: str) -> SenderOut:
@@ -187,6 +203,16 @@ def _sender_out(db: Session, message: Message, observer_userid: str) -> SenderOu
             display_name = display_name or employee.name
             avatar = employee.avatar
     elif message.sender_type == "external_contact":
+        if message.roomid:
+            member = db.scalar(
+                select(CustomerChatMember).where(
+                    CustomerChatMember.chat_id == message.roomid,
+                    CustomerChatMember.member_userid == message.sender_id,
+                )
+            )
+            if member is not None:
+                display_name = member.group_nickname or member.name or display_name
+                avatar = (member.raw_payload or {}).get("avatar")
         contact = db.scalar(
             select(ExternalContact).where(ExternalContact.external_userid == message.sender_id)
         )
@@ -201,7 +227,7 @@ def _sender_out(db: Session, message: Message, observer_userid: str) -> SenderOu
             or (contact.name if contact is not None else None)
             or display_name
         )
-        avatar = contact.avatar if contact is not None else None
+        avatar = avatar or (contact.avatar if contact is not None else None)
     return SenderOut(
         id=message.sender_id,
         type=message.sender_type,
@@ -230,6 +256,7 @@ def _message_out(db: Session, message: Message, observer_userid: str) -> Message
                     "attachment_id": attachment.id,
                     "type": attachment.attachment_type,
                     "download_status": attachment.download_status,
+                    "download_error": attachment.download_error,
                     "url": (
                         f"/api/attachments/{attachment.id}/content"
                         if attachment.download_status == "downloaded"
@@ -246,8 +273,45 @@ def _message_out(db: Session, message: Message, observer_userid: str) -> Message
     )
 
 
+def _encode_message_cursor(message: Message) -> str:
+    return f"{message.msg_time.isoformat()}_{message.id}"
+
+
+def _decode_message_cursor(cursor: str) -> tuple[datetime, int]:
+    try:
+        msg_time, message_id = cursor.rsplit("_", 1)
+        return datetime.fromisoformat(msg_time), int(message_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid message cursor") from exc
+
+
+def _message_page(db: Session, stmt, userid: str, limit: int, cursor: str | None) -> dict:
+    if cursor:
+        cursor_time, cursor_id = _decode_message_cursor(cursor)
+        stmt = stmt.where(
+            or_(
+                Message.msg_time < cursor_time,
+                and_(Message.msg_time == cursor_time, Message.id < cursor_id),
+            )
+        )
+    rows = db.scalars(
+        stmt.order_by(desc(Message.msg_time), desc(Message.id)).limit(limit + 1)
+    ).all()
+    page_rows = rows[:limit]
+    return {
+        "items": [_message_out(db, message, userid).model_dump() for message in reversed(page_rows)],
+        "next_cursor": _encode_message_cursor(page_rows[-1]) if len(rows) > limit and page_rows else None,
+    }
+
+
 @router.get("/student-conversations/{external_userid}/messages", response_model=dict)
-def list_student_messages(userid: str, external_userid: str, limit: int = 50, db: Session = Depends(get_db)) -> dict:
+def list_student_messages(
+    userid: str,
+    external_userid: str,
+    limit: int = Query(default=50, le=100),
+    cursor: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
     stmt = (
         select(Message)
         .join(MessageRecipientAlias, MessageRecipientAlias.message_id == Message.id)
@@ -258,20 +322,18 @@ def list_student_messages(userid: str, external_userid: str, limit: int = 50, db
                 and_(Message.sender_id == external_userid, MessageRecipientAlias.recipient_id == userid),
             ),
         )
-        .order_by(Message.msg_time.asc())
-        .limit(limit)
     )
-    return {
-        "items": [
-            _message_out(db, message, userid).model_dump()
-            for message in db.scalars(stmt).all()
-        ],
-        "next_cursor": None,
-    }
+    return _message_page(db, stmt, userid, limit, cursor)
 
 
 @router.get("/customer-chat-conversations/{chat_id}/messages", response_model=dict)
-def list_chat_messages(userid: str, chat_id: str, limit: int = 50, db: Session = Depends(get_db)) -> dict:
+def list_chat_messages(
+    userid: str,
+    chat_id: str,
+    limit: int = Query(default=50, le=100),
+    cursor: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
     membership = db.scalar(
         select(CustomerChatMember).where(
             CustomerChatMember.chat_id == chat_id,
@@ -284,16 +346,8 @@ def list_chat_messages(userid: str, chat_id: str, limit: int = 50, db: Session =
     stmt = (
         select(Message)
         .where(Message.conversation_type == "room", Message.roomid == chat_id)
-        .order_by(Message.msg_time.asc())
-        .limit(limit)
     )
-    return {
-        "items": [
-            _message_out(db, message, userid).model_dump()
-            for message in db.scalars(stmt).all()
-        ],
-        "next_cursor": None,
-    }
+    return _message_page(db, stmt, userid, limit, cursor)
 
 
 @router.get("/conversations/{conversation_type}/{conversation_id}/message-search", response_model=dict)

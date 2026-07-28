@@ -46,6 +46,26 @@ class FakeCustomerChatClient:
         }
 
 
+class FakeExistingFallbackChatClient:
+    def list_customer_chats(self, owner_userid=None, cursor=""):
+        assert owner_userid == "XiaoHaiYan_3"
+        return {"group_chat_list": [], "next_cursor": ""}
+
+    def get_customer_chat(self, chat_id):
+        assert chat_id == "chat_fallback"
+        return {
+            "group_chat": {
+                "chat_id": "chat_fallback",
+                "name": "已同步群名",
+                "owner": "other_teacher",
+                "member_list": [
+                    {"userid": "XiaoHaiYan_3", "type": 1, "name": "小海燕老师", "role": 2},
+                    {"userid": "wm_student", "type": 2, "name": "群内学员", "role": 2},
+                ],
+            }
+        }
+
+
 def test_sync_customer_chats_upserts_chat_name_and_members(db):
     db.query(CustomerChatMember).delete()
     db.query(CustomerChat).delete()
@@ -62,3 +82,27 @@ def test_sync_customer_chats_upserts_chat_name_and_members(db):
     assert chat.admin_userids == ["assistant_teacher"]
     assert {member.member_userid for member in members} == {"XiaoHaiYan_3", "wm_student"}
     assert db.query(CustomerChatMember).filter_by(member_userid="wm_student").one().member_type == "external_contact"
+
+
+def test_sync_customer_chats_refreshes_existing_member_fallback_chats(db):
+    db.query(CustomerChatMember).delete()
+    db.query(CustomerChat).delete()
+    db.add(CustomerChat(chat_id="chat_fallback", name="chat_fallback", raw_payload={"source": "message_fallback"}))
+    db.add(
+        CustomerChatMember(
+            chat_id="chat_fallback",
+            member_userid="XiaoHaiYan_3",
+            member_type="employee",
+            is_active=True,
+            raw_payload={"source": "message_fallback"},
+        )
+    )
+    db.commit()
+
+    result = sync_customer_chats(db, FakeExistingFallbackChatClient(), owner_userids=["XiaoHaiYan_3"])
+
+    chat = db.query(CustomerChat).filter_by(chat_id="chat_fallback").one()
+    assert result == {"synced_owners": 1, "synced_chats": 1, "errors": []}
+    assert chat.name == "已同步群名"
+    assert chat.owner_userid == "other_teacher"
+    assert chat.member_count == 2

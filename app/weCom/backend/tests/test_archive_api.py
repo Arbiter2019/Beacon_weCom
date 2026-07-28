@@ -87,6 +87,46 @@ def test_group_conversation_owner_uses_employee_name(db, client, auth_headers):
     assert response.json()["items"][0]["owner_name"] == "小海燕老师"
 
 
+def test_conversations_return_cursor_for_next_page(db, client, auth_headers):
+    from wecom_app.models import EmployeeExternalContact, ExternalContact
+
+    for index in range(3):
+        external_userid = f"external_page_{index}"
+        db.add(ExternalContact(external_userid=external_userid, name=f"分页学员 {index}"))
+        db.add(
+            EmployeeExternalContact(
+                userid="wang_teacher",
+                external_userid=external_userid,
+                remark=f"分页学员 {index}",
+            )
+        )
+    db.commit()
+
+    first_response = client.get(
+        "/api/observed-employees/wang_teacher/conversations?type=student&limit=2",
+        headers=auth_headers,
+    )
+
+    assert first_response.status_code == 200
+    first_page = first_response.json()
+    assert len(first_page["items"]) == 2
+    assert first_page["next_cursor"] is not None
+
+    second_response = client.get(
+        "/api/observed-employees/wang_teacher/conversations"
+        f"?type=student&limit=2&cursor={first_page['next_cursor']}",
+        headers=auth_headers,
+    )
+
+    assert second_response.status_code == 200
+    second_page = second_response.json()
+    assert len(second_page["items"]) == 2
+    first_ids = {item["external_userid"] for item in first_page["items"]}
+    second_ids = {item["external_userid"] for item in second_page["items"]}
+    assert first_ids.isdisjoint(second_ids)
+    assert second_page["next_cursor"] is None
+
+
 def test_group_detail_resolves_employee_and_external_member_names(db, client, auth_headers):
     from wecom_app.models import CustomerChatMember, Employee, ExternalContact
 
@@ -174,6 +214,108 @@ def test_group_message_sender_uses_actual_employee_identity(db, client, auth_hea
         "display_name": "李老师群名片",
         "avatar": "https://example.test/li.png",
     }
+
+
+def test_group_message_sender_uses_external_member_group_identity(db, client, auth_headers):
+    from datetime import datetime
+
+    from wecom_app.models import CustomerChatMember, Message, RawMessage
+
+    db.add(
+        CustomerChatMember(
+            chat_id="chat_math",
+            member_userid="wm_not_friend",
+            member_type="external_contact",
+            name="微信学员名",
+            group_nickname="群内小明",
+            role="member",
+        )
+    )
+    raw = RawMessage(seq=32, msgid="msg_group_external_raw", decrypt_payload={"msgtype": "text"})
+    db.add(raw)
+    db.flush()
+    db.add(
+        Message(
+            raw_message_id=raw.id,
+            seq=32,
+            msgid="msg_group_external",
+            action="send",
+            msg_type="text",
+            conversation_type="room",
+            roomid="chat_math",
+            sender_id="wm_not_friend",
+            sender_type="external_contact",
+            content_text="我不是观测账号好友",
+            msg_time_ms=1781836500000,
+            msg_time=datetime(2026, 6, 19, 10, 35),
+            raw_payload={"roomid": "chat_math"},
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        "/api/observed-employees/wang_teacher/customer-chat-conversations/chat_math/messages",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    message = next(item for item in response.json()["items"] if item["msgid"] == "msg_group_external")
+    assert message["sender"]["display_name"] == "群内小明"
+
+
+def test_group_messages_default_to_recent_page_and_cursor_loads_older(db, client, auth_headers):
+    from datetime import datetime, timedelta
+
+    from wecom_app.models import Message, RawMessage
+
+    base_time = datetime(2026, 6, 19, 8, 0)
+    for index in range(60):
+        seq = 100 + index
+        raw = RawMessage(seq=seq, msgid=f"raw_group_page_{index}", decrypt_payload={"msgtype": "text"})
+        db.add(raw)
+        db.flush()
+        db.add(
+            Message(
+                raw_message_id=raw.id,
+                seq=seq,
+                msgid=f"msg_group_page_{index}",
+                action="send",
+                msg_type="text",
+                conversation_type="room",
+                roomid="chat_math",
+                sender_id="wang_teacher",
+                sender_type="employee",
+                content_text=f"第 {index} 条",
+                msg_time_ms=1781827200000 + index * 60000,
+                msg_time=base_time + timedelta(minutes=index),
+                raw_payload={"roomid": "chat_math"},
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/api/observed-employees/wang_teacher/customer-chat-conversations/chat_math/messages",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    page = response.json()
+    assert [item["msgid"] for item in page["items"][:2]] == ["msg_group_page_10", "msg_group_page_11"]
+    assert page["items"][-1]["msgid"] == "msg_group_page_59"
+    assert page["next_cursor"] is not None
+
+    older_response = client.get(
+        "/api/observed-employees/wang_teacher/customer-chat-conversations/chat_math/messages"
+        f"?cursor={page['next_cursor']}",
+        headers=auth_headers,
+    )
+
+    assert older_response.status_code == 200
+    older_page = older_response.json()
+    assert [item["msgid"] for item in older_page["items"]] == [
+        f"msg_group_page_{index}" for index in range(10)
+    ]
+    assert older_page["next_cursor"] is None
 
 
 def test_search_is_scoped_to_current_conversation(client, auth_headers):

@@ -312,7 +312,7 @@ class Attachment(Base, TimestampMixin):
     file_size: Mapped[int | None] = mapped_column(BigInteger)
     file_name: Mapped[str | None] = mapped_column(String(500))
     file_ext: Mapped[str | None] = mapped_column(String(64))
-    storage_backend: Mapped[str] = mapped_column(String(64), default="local_volume", nullable=False)
+    storage_backend: Mapped[str] = mapped_column(String(64), default="aliyun_oss", nullable=False)
     storage_bucket: Mapped[str | None] = mapped_column(String(255))
     storage_key: Mapped[str | None] = mapped_column(Text)
     storage_url: Mapped[str | None] = mapped_column(Text)

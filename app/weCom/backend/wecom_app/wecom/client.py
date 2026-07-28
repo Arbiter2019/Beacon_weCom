@@ -77,12 +77,8 @@ class WeComArchiveClient:
 
     def get_chat_data(self, seq: int, limit: int = 100) -> tuple[list[dict], int]:
         """Returns (messages, max_seq_seen). max_seq advances even when decryption fails."""
-        try:
-            result = self._call({"cmd": "get_chat_data", "seq": seq, "limit": limit})
-            return result["data"], result.get("max_seq", 0)
-        except RuntimeError as exc:
-            logger.error("get_chat_data failed: %s", exc)
-            return [], 0
+        result = self._call({"cmd": "get_chat_data", "seq": seq, "limit": limit})
+        return result["data"], result.get("max_seq", 0)
 
     def download_media(self, sdkfileid: str) -> bytes:
         result = self._call({"cmd": "download_media", "sdkfileid": sdkfileid})

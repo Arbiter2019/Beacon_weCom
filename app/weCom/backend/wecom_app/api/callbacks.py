@@ -3,6 +3,7 @@ import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from wecom_app.core.config import Settings, get_settings
@@ -110,7 +111,11 @@ async def receive_callback(
         received_at=datetime.utcnow(),
     )
     db.add(event)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return {"status": "duplicate", "event_key": event.event_key}
     if callback_name == "archive-event":
         background_tasks.add_task(_sync_messages_after_archive_event)
     return {"status": "accepted", "event_id": event.id}

@@ -1,6 +1,8 @@
 from datetime import datetime
+from contextlib import contextmanager
 
 from wecom_app.models import CustomerChat, CustomerChatMember, Message, MessageRecipient, RawMessage, SyncCursor
+from wecom_app.services import sync_jobs
 from wecom_app.services.sync_jobs import sync_messages_once
 
 
@@ -40,6 +42,16 @@ class FakeArchiveClient:
 class EmptyArchiveClient:
     def get_chat_data(self, seq: int, limit: int = 100):
         return [], seq
+
+
+class FailingArchiveClient:
+    def get_chat_data(self, seq: int, limit: int = 100):
+        raise RuntimeError("Invalid control character at: line 1 column 6972 (char 6971)")
+
+
+class UnexpectedArchiveClient:
+    def get_chat_data(self, seq: int, limit: int = 100):
+        raise AssertionError("sync client should not be called when lock is unavailable")
 
 
 def test_initial_sync_drains_available_history_and_processes_newest_first(db):
@@ -139,3 +151,46 @@ def test_sync_does_not_report_database_lock_skip(db):
 
     assert result.message == "message sync completed"
     assert client.calls == [(0, 1000), (2, 1000)]
+
+
+def test_sync_records_sdk_failure_without_marking_success(db):
+    db.query(MessageRecipient).delete()
+    db.query(Message).delete()
+    db.query(RawMessage).delete()
+    db.query(SyncCursor).delete()
+    db.add(SyncCursor(cursor_type="message_seq", cursor_value="43023632"))
+    db.commit()
+
+    result = sync_messages_once(db, client=FailingArchiveClient())
+
+    cursor = db.query(SyncCursor).filter_by(cursor_type="message_seq").one()
+    assert result.fetched == 0
+    assert result.processed == 0
+    assert result.message.startswith("message sync failed:")
+    assert cursor.cursor_value == "43023632"
+    assert cursor.last_success_at is None
+    assert cursor.last_error == "Invalid control character at: line 1 column 6972 (char 6971)"
+
+
+def test_sync_skips_when_another_message_sync_holds_lock(db, monkeypatch):
+    db.query(MessageRecipient).delete()
+    db.query(Message).delete()
+    db.query(RawMessage).delete()
+    db.query(SyncCursor).delete()
+    db.add(SyncCursor(cursor_type="message_seq", cursor_value="43023632"))
+    db.commit()
+
+    @contextmanager
+    def busy_lock(db):
+        yield False
+
+    monkeypatch.setattr(sync_jobs, "_message_sync_lock", busy_lock)
+
+    result = sync_messages_once(db, client=UnexpectedArchiveClient())
+
+    cursor = db.query(SyncCursor).filter_by(cursor_type="message_seq").one()
+    assert result.fetched == 0
+    assert result.processed == 0
+    assert result.message == "message sync skipped: another sync is running"
+    assert cursor.cursor_value == "43023632"
+    assert cursor.last_success_at is None

@@ -117,3 +117,27 @@ def test_encrypted_callback_post_uses_encrypt_field_for_signature(client, db):
     assert event.payload["ChangeType"] == "add_external_contact"
     assert event.payload["UserID"] == "XuWei"
     assert event.payload["ExternalUserID"] == "wm_external"
+
+
+def test_duplicate_callback_event_is_idempotent(client, db):
+    body = (
+        "<xml><MsgType><![CDATA[event]]></MsgType>"
+        "<Event><![CDATA[change_external_contact]]></Event>"
+        "<ChangeType><![CDATA[edit_external_contact]]></ChangeType>"
+        "<UserID><![CDATA[ShenQingWen_1]]></UserID>"
+        "<ExternalUserID><![CDATA[wmcmgDCQAAk6Yc3UQ9QTjwa5WSltHJAw]]></ExternalUserID></xml>"
+    )
+
+    first = client.post("/callbacks/wecom/customer?timestamp=1785206755&nonce=1785215258", content=body)
+    second = client.post("/callbacks/wecom/customer?timestamp=1785206755&nonce=1785215258", content=body)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["status"] == "duplicate"
+    events = db.query(RawEvent).filter_by(
+        event_key=(
+            "customer:change_external_contact:edit_external_contact:"
+            "ShenQingWen_1:wmcmgDCQAAk6Yc3UQ9QTjwa5WSltHJAw"
+        )
+    ).all()
+    assert len(events) == 1

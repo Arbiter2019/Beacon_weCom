@@ -5,6 +5,7 @@ from wecom_app.core.config import get_settings
 from wecom_app.db.session import SessionLocal
 from wecom_app.services.attachments import backfill_image_attachments, download_pending_attachments
 from wecom_app.services.external_contact_sync import sync_customer_chats, sync_external_contacts
+from wecom_app.services.storage import get_attachment_storage
 from wecom_app.services.sync_jobs import sync_messages_once
 from wecom_app.wecom.client import WeComArchiveClient
 from wecom_app.wecom.customer_client import WeComCustomerClient
@@ -38,14 +39,9 @@ def run_once(task_type: str = "message") -> dict:
             }
         if task_type == "attachments":
             settings = get_settings()
-            client = WeComArchiveClient()
+            storage = get_attachment_storage(settings)
             backfill_result = backfill_image_attachments(db)
-            download_result = download_pending_attachments(
-                db,
-                client,
-                settings.attachment_storage_root,
-                client_factory=WeComArchiveClient,
-            )
+            download_result = download_pending_attachments(db, WeComArchiveClient, storage)
             return {
                 "task": task_type,
                 "message": "attachment sync completed",
@@ -53,6 +49,8 @@ def run_once(task_type: str = "message") -> dict:
                 "processed": download_result["processed"],
                 "downloaded": download_result["downloaded"],
                 "failed": download_result["failed"],
+                "expired": download_result["expired"],
+                "skipped": download_result["skipped"],
             }
         if task_type == "customer-chat":
             settings = get_settings()
@@ -120,20 +118,10 @@ def main() -> None:
                 with SessionLocal() as db:
                     backfill_result = backfill_image_attachments(db)
                 logger.info("attachment backfill result: %s", backfill_result)
-
-                def rebuild_archive_client() -> WeComArchiveClient:
-                    nonlocal client
-                    client = WeComArchiveClient()
-                    return client
-
                 with SessionLocal() as db:
-                    attachment_result = download_pending_attachments(
-                        db,
-                        client,
-                        settings.attachment_storage_root,
-                        client_factory=rebuild_archive_client,
-                    )
-                logger.info("attachment sync result: %s", attachment_result)
+                    storage = get_attachment_storage(settings)
+                    attachment_result = download_pending_attachments(db, WeComArchiveClient, storage)
+                logger.info("attachment download result: %s", attachment_result)
         except Exception as exc:
             logger.error("attachment sync cycle error: %s", exc)
         time.sleep(settings.worker_poll_interval_seconds)

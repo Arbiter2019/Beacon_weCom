@@ -39,9 +39,27 @@ export type Message = {
   content: {
     text?: string | null;
     link?: { title?: string | null; url?: string | null; description?: string | null } | null;
-    attachment?: { attachment_id: number; type: string; download_status: string; url?: string | null } | null;
+    attachment?: Attachment | null;
   };
   msg_time: string;
   is_recalled: boolean;
   recalled_at?: string | null;
+};
+
+export type MessagePage = {
+  items: Message[];
+  next_cursor?: string | null;
+};
+
+export type ConversationPage = {
+  items: Conversation[];
+  next_cursor?: string | null;
+};
+
+export type Attachment = {
+  attachment_id: number;
+  type: string;
+  download_status: string;
+  url?: string | null;
+  download_error?: string | null;
 };

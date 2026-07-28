@@ -10,16 +10,17 @@ import {
   Settings,
   Users
 } from 'lucide-react';
-import { ChangeEvent, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, UIEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   fetchConversations,
   fetchDirectoryEmployees,
   fetchEmployees,
   fetchMessages,
+  triggerAttachmentDownload,
   updateObservableEmployee
 } from './api/client';
-import type { Conversation, DirectoryEmployee, Employee, Message } from './api/types';
+import type { Conversation, ConversationPage, DirectoryEmployee, Employee, Message, MessagePage } from './api/types';
 
 type ProductView = 'archive' | 'config';
 type ConversationFilter = 'all' | 'student' | 'group';
@@ -76,6 +77,14 @@ function authenticatedAssetUrl(url?: string | null) {
   return `${url}${separator}token=${encodeURIComponent(assetToken)}`;
 }
 
+function normalizeMessagePage(page: MessagePage | Message[]): MessagePage {
+  return Array.isArray(page) ? { items: page, next_cursor: null } : page;
+}
+
+function normalizeConversationPage(page: ConversationPage | Conversation[]): ConversationPage {
+  return Array.isArray(page) ? { items: page, next_cursor: null } : page;
+}
+
 export default function App() {
   const [productView, setProductView] = useState<ProductView>('archive');
   const [mobileView, setMobileView] = useState<MobileArchiveView>('scope');
@@ -90,8 +99,12 @@ export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [messageNextCursor, setMessageNextCursor] = useState<string | null>(null);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [conversationFilter, setConversationFilter] = useState<ConversationFilter>('all');
   const [conversationKeyword, setConversationKeyword] = useState('');
+  const [conversationNextCursor, setConversationNextCursor] = useState<string | null>(null);
+  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [messageQuery, setMessageQuery] = useState('');
@@ -99,6 +112,9 @@ export default function App() {
   const [messageFrom, setMessageFrom] = useState('');
   const [messageTo, setMessageTo] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [triggeringAttachmentIds, setTriggeringAttachmentIds] = useState<Set<number>>(new Set());
+  const conversationRequestRef = useRef(0);
+  const messageRequestRef = useRef(0);
 
   const loadEmployees = () => {
     Promise.all([fetchEmployees(), fetchDirectoryEmployees()]).then(([observedItems, directoryItems]) => {
@@ -116,13 +132,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const requestId = conversationRequestRef.current + 1;
+    conversationRequestRef.current = requestId;
     if (!selectedEmployee) {
       setConversations([]);
       setSelectedConversation(null);
+      setMessages([]);
+      setMessageNextCursor(null);
+      setConversationNextCursor(null);
       return;
     }
-    fetchConversations(selectedEmployee.userid, apiConversationType(conversationFilter)).then((items) => {
+    setConversations([]);
+    setSelectedConversation(null);
+    setMessages([]);
+    setMessageNextCursor(null);
+    setConversationNextCursor(null);
+    setLoadingMoreConversations(false);
+    fetchConversations(selectedEmployee.userid, apiConversationType(conversationFilter)).then((page) => {
+      if (conversationRequestRef.current !== requestId) return;
+      const normalizedPage = normalizeConversationPage(page);
+      const items = normalizedPage.items;
       setConversations(items);
+      setConversationNextCursor(normalizedPage.next_cursor ?? null);
       setSelectedConversation((current) => {
         if (!current) return items[0] ?? null;
         return items.find((item) => conversationKey(item) === conversationKey(current)) ?? items[0] ?? null;
@@ -131,12 +162,37 @@ export default function App() {
   }, [selectedEmployee, conversationFilter]);
 
   useEffect(() => {
+    const requestId = messageRequestRef.current + 1;
+    messageRequestRef.current = requestId;
     if (!selectedEmployee || !selectedConversation) {
       setMessages([]);
+      setMessageNextCursor(null);
       return;
     }
-    fetchMessages(selectedEmployee.userid, selectedConversation).then(setMessages);
+    setMessages([]);
+    setMessageNextCursor(null);
+    fetchMessages(selectedEmployee.userid, selectedConversation).then((page) => {
+      if (messageRequestRef.current !== requestId) return;
+      const normalizedPage = normalizeMessagePage(page);
+      setMessages(normalizedPage.items);
+      setMessageNextCursor(normalizedPage.next_cursor ?? null);
+    });
   }, [selectedEmployee, selectedConversation]);
+
+  useEffect(() => {
+    if (!selectedEmployee || !selectedConversation) return;
+    if (!messages.some((message) => message.content.attachment?.download_status === 'downloading')) return;
+    const timer = window.setTimeout(() => {
+      const requestId = messageRequestRef.current;
+      fetchMessages(selectedEmployee.userid, selectedConversation).then((page) => {
+        if (messageRequestRef.current !== requestId) return;
+        const normalizedPage = normalizeMessagePage(page);
+        setMessages(normalizedPage.items);
+        setMessageNextCursor(normalizedPage.next_cursor ?? null);
+      });
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [messages, selectedConversation, selectedEmployee]);
 
   const filteredEmployees = useMemo(() => {
     const query = employeeKeyword.trim().toLowerCase();
@@ -216,6 +272,102 @@ export default function App() {
       setConfigStatus(next.size ? `已选择 ${next.size} 个通讯录账号，可添加到观测范围。` : '请选择左侧员工后添加，或在右侧选择员工后移出。');
       return next;
     });
+  };
+
+  const refreshMessages = () => {
+    if (!selectedEmployee || !selectedConversation) return Promise.resolve([]);
+    const requestId = messageRequestRef.current;
+    return fetchMessages(selectedEmployee.userid, selectedConversation).then((page) => {
+      if (messageRequestRef.current !== requestId) return messages;
+      const normalizedPage = normalizeMessagePage(page);
+      setMessages(normalizedPage.items);
+      setMessageNextCursor(normalizedPage.next_cursor ?? null);
+      return normalizedPage.items;
+    });
+  };
+
+  const loadOlderMessages = async () => {
+    if (!selectedEmployee || !selectedConversation || !messageNextCursor || loadingOlderMessages) return;
+    const requestId = messageRequestRef.current;
+    setLoadingOlderMessages(true);
+    try {
+      const page = normalizeMessagePage(
+        await fetchMessages(selectedEmployee.userid, selectedConversation, messageNextCursor)
+      );
+      if (messageRequestRef.current !== requestId) return;
+      setMessages((current) => [...page.items, ...current]);
+      setMessageNextCursor(page.next_cursor ?? null);
+    } finally {
+      if (messageRequestRef.current === requestId) setLoadingOlderMessages(false);
+    }
+  };
+
+  const handleMessageScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (event.currentTarget.scrollTop <= 8) {
+      void loadOlderMessages();
+    }
+  };
+
+  const loadMoreConversations = async () => {
+    if (!selectedEmployee || !conversationNextCursor || loadingMoreConversations) return;
+    const requestId = conversationRequestRef.current;
+    setLoadingMoreConversations(true);
+    try {
+      const page = normalizeConversationPage(
+        await fetchConversations(
+          selectedEmployee.userid,
+          apiConversationType(conversationFilter),
+          conversationNextCursor
+        )
+      );
+      if (conversationRequestRef.current !== requestId) return;
+      setConversations((current) => {
+        const existingKeys = new Set(current.map(conversationKey));
+        return [
+          ...current,
+          ...page.items.filter((conversation) => !existingKeys.has(conversationKey(conversation)))
+        ];
+      });
+      setConversationNextCursor(page.next_cursor ?? null);
+    } finally {
+      if (conversationRequestRef.current === requestId) setLoadingMoreConversations(false);
+    }
+  };
+
+  const handleConversationScroll = (event: UIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget;
+    if (target.scrollTop + target.clientHeight >= target.scrollHeight - 8) {
+      void loadMoreConversations();
+    }
+  };
+
+  const handleAttachmentDownload = async (message: Message) => {
+    const attachment = message.content.attachment;
+    if (!attachment || triggeringAttachmentIds.has(attachment.attachment_id)) return;
+    setTriggeringAttachmentIds((current) => new Set(current).add(attachment.attachment_id));
+    setMessages((current) =>
+      current.map((item) =>
+        item.msgid === message.msgid
+          ? {
+              ...item,
+              content: {
+                ...item.content,
+                attachment: { ...attachment, download_status: 'downloading', download_error: null }
+              }
+            }
+          : item
+      )
+    );
+    try {
+      await triggerAttachmentDownload(attachment.attachment_id);
+      await refreshMessages();
+    } finally {
+      setTriggeringAttachmentIds((current) => {
+        const next = new Set(current);
+        next.delete(attachment.attachment_id);
+        return next;
+      });
+    }
   };
 
   const toggleObservedSelection = (employee: Employee) => {
@@ -392,44 +544,55 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <div className="conversation-list">
+              <div className="conversation-list" onScroll={handleConversationScroll}>
                 {filteredConversations.length ? (
-                  filteredConversations.map((conversation) => {
-                    const type = uiConversationType(conversation.conversation_type);
-                    return (
+                  <>
+                    {filteredConversations.map((conversation) => {
+                      const type = uiConversationType(conversation.conversation_type);
+                      return (
+                        <button
+                          className={`conversation-item ${conversationKey(conversation) === (selectedConversation ? conversationKey(selectedConversation) : '') ? 'active' : ''}`}
+                          key={conversationKey(conversation)}
+                          onClick={() => {
+                            setSelectedConversation(conversation);
+                            setMobileView('chat');
+                          }}
+                        >
+                          {type === 'group' ? (
+                            <span className="avatar group"><Users size={18} /></span>
+                          ) : (
+                            <Avatar name={conversation.display_name} src={conversation.avatar} variant="customer" />
+                          )}
+                          <span className="conversation-meta">
+                            <span className="conversation-title-line">
+                              <strong>{conversation.display_name}</strong>
+                              <span className="badge">{type === 'group' ? '群' : '学员'}</span>
+                              <span className="conversation-sort">{conversation.sort_basis === 'last_viewed' ? '最近查看' : '最近消息'}</span>
+                            </span>
+                            <span>{conversation.summary || '暂无消息'}</span>
+                            <span className="conversation-foot">
+                              <span>最近查看：{fmt(conversation.last_viewed_at)}</span>
+                              <span>最近消息：{fmt(conversation.last_message_time)}</span>
+                              {type === 'group' ? (
+                                <span>{conversation.member_count ?? '—'} 人 · {conversation.observer_role || '成员'} · 群主 {conversation.owner_name || '—'}</span>
+                              ) : (
+                                <span>微信昵称：{conversation.wechat_name || '—'}</span>
+                              )}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {conversationNextCursor ? (
                       <button
-                        className={`conversation-item ${conversationKey(conversation) === (selectedConversation ? conversationKey(selectedConversation) : '') ? 'active' : ''}`}
-                        key={conversationKey(conversation)}
-                        onClick={() => {
-                          setSelectedConversation(conversation);
-                          setMobileView('chat');
-                        }}
+                        className="load-more-row"
+                        disabled={loadingMoreConversations}
+                        onClick={loadMoreConversations}
                       >
-                        {type === 'group' ? (
-                          <span className="avatar group"><Users size={18} /></span>
-                        ) : (
-                          <Avatar name={conversation.display_name} src={conversation.avatar} variant="customer" />
-                        )}
-                        <span className="conversation-meta">
-                          <span className="conversation-title-line">
-                            <strong>{conversation.display_name}</strong>
-                            <span className="badge">{type === 'group' ? '群' : '学员'}</span>
-                            <span className="conversation-sort">{conversation.sort_basis === 'last_viewed' ? '最近查看' : '最近消息'}</span>
-                          </span>
-                          <span>{conversation.summary || '暂无消息'}</span>
-                          <span className="conversation-foot">
-                            <span>最近查看：{fmt(conversation.last_viewed_at)}</span>
-                            <span>最近消息：{fmt(conversation.last_message_time)}</span>
-                            {type === 'group' ? (
-                              <span>{conversation.member_count ?? '—'} 人 · {conversation.observer_role || '成员'} · 群主 {conversation.owner_name || '—'}</span>
-                            ) : (
-                              <span>微信昵称：{conversation.wechat_name || '—'}</span>
-                            )}
-                          </span>
-                        </span>
+                        {loadingMoreConversations ? '加载中' : '加载更多会话'}
                       </button>
-                    );
-                  })
+                    ) : null}
+                  </>
                 ) : (
                   <div className="empty-state"><strong>没有匹配会话</strong><span>请调整会话类型或关键词</span></div>
                 )}
@@ -462,12 +625,20 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              <div className="message-list">
+              <div className="message-list" onScroll={handleMessageScroll}>
+                {messageNextCursor ? (
+                  <button className="load-more-row" disabled={loadingOlderMessages} onClick={loadOlderMessages}>
+                    {loadingOlderMessages ? '加载中' : '查看更多历史消息'}
+                  </button>
+                ) : null}
                 {messages.length ? (
                   messages.map((message) => {
                     const senderName = message.sender.display_name || message.sender.id;
                     const side = message.sender.id === selectedEmployee?.userid ? 'self' : 'other';
-                    const imageUrl = authenticatedAssetUrl(message.content.attachment?.url);
+                    const attachment = message.content.attachment;
+                    const imageUrl = authenticatedAssetUrl(attachment?.url);
+                    const isImageAttachment = message.msg_type === 'image' && attachment?.type === 'image';
+                    const isTriggering = attachment ? triggeringAttachmentIds.has(attachment.attachment_id) : false;
                     return (
                       <article className={`message ${side}`} data-message-id={message.msgid} key={message.msgid}>
                         <Avatar name={senderName} src={message.sender.avatar} />
@@ -479,10 +650,29 @@ export default function App() {
                             <button className="bubble image-bubble image-preview-bubble" onClick={() => setImagePreview(imageUrl)}>
                               <img alt={`${senderName} 的图片消息`} src={imageUrl} />
                             </button>
-                          ) : message.content.attachment ? (
-                            <button className="bubble image-bubble" onClick={() => setImagePreview(message.content.attachment?.type || '图片消息')}>
-                              <Image size={18} /> 图片消息 · {message.content.attachment.download_status}
+                          ) : isImageAttachment && attachment.download_status === 'expired' ? (
+                            <div className="bubble image-bubble image-status-bubble">
+                              <Image size={18} />
+                              <span>文件已过期/无法下载</span>
+                            </div>
+                          ) : isImageAttachment && attachment.download_status === 'downloading' ? (
+                            <button className="bubble image-bubble image-status-bubble" disabled>
+                              <Image size={18} /> 图片下载中
                             </button>
+                          ) : isImageAttachment ? (
+                            <button
+                              className="bubble image-bubble image-status-bubble"
+                              aria-label={attachment.download_status === 'failed' ? '重试下载图片' : '下载图片'}
+                              disabled={isTriggering}
+                              onClick={() => handleAttachmentDownload(message)}
+                            >
+                              <Image size={18} />
+                              {attachment.download_status === 'failed' ? '重试下载图片' : '下载图片'}
+                            </button>
+                          ) : attachment ? (
+                            <div className="bubble image-bubble image-status-bubble">
+                              <Image size={18} /> 附件 · {attachment.download_status}
+                            </div>
                           ) : !message.is_supported ? (
                             <div className="bubble">
                               <span>{message.content.text}</span>

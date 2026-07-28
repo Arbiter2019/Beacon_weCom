@@ -1,7 +1,8 @@
 import logging
+from contextlib import contextmanager
 from datetime import datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from wecom_app.core.config import get_settings
@@ -14,6 +15,39 @@ from wecom_app.services.transform import (
 from wecom_app.wecom.client import SyncResult, WeComArchiveClient
 
 logger = logging.getLogger(__name__)
+MESSAGE_SYNC_LOCK_NAME = "wecom_sync_messages"
+MESSAGE_SYNC_LOCK_TIMEOUT_SECONDS = 60
+
+
+@contextmanager
+def _message_sync_lock(db: Session):
+    bind = db.get_bind()
+    dialect_name = bind.dialect.name if bind is not None else ""
+    if dialect_name not in {"mysql", "mariadb"}:
+        yield True
+        return
+
+    acquired = db.scalar(
+        text("SELECT GET_LOCK(:lock_name, :timeout_seconds)"),
+        {
+            "lock_name": MESSAGE_SYNC_LOCK_NAME,
+            "timeout_seconds": MESSAGE_SYNC_LOCK_TIMEOUT_SECONDS,
+        },
+    )
+    try:
+        yield acquired == 1
+    finally:
+        if acquired == 1:
+            db.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": MESSAGE_SYNC_LOCK_NAME})
+
+
+def _record_message_sync_failure(db: Session, error: str) -> None:
+    db.rollback()
+    cursor = db.scalar(select(SyncCursor).where(SyncCursor.cursor_type == "message_seq"))
+    if cursor is not None:
+        cursor.last_run_at = datetime.utcnow()
+        cursor.last_error = error
+    db.commit()
 
 
 def _save_raw_messages(db: Session, messages: list[dict]) -> int:
@@ -53,49 +87,67 @@ def sync_messages_once(db: Session, client: WeComArchiveClient | None = None) ->
 
 
 def _sync_messages_once(db: Session, settings, client: WeComArchiveClient | None = None) -> SyncResult:
-    if client is None:
-        try:
-            client = WeComArchiveClient()
-        except Exception as exc:
-            logger.error("WeComArchiveClient init failed: %s", exc)
-            return SyncResult(fetched=0, processed=0, message=f"sdk init error: {exc}")
+    with _message_sync_lock(db) as lock_acquired:
+        if not lock_acquired:
+            return SyncResult(
+                fetched=0,
+                processed=0,
+                message="message sync skipped: another sync is running",
+            )
 
-    cursor = db.scalar(select(SyncCursor).where(SyncCursor.cursor_type == "message_seq"))
-    is_bootstrap = cursor is None
-    if cursor is None:
-        cursor = SyncCursor(cursor_type="message_seq", cursor_value="0")
-        db.add(cursor)
-        db.flush()
-    seq = int(cursor.cursor_value or "0")
-    fetched_messages = []
-    max_seq = seq
-    batch_limit = settings.message_sync_batch_limit
-    max_batches = settings.message_bootstrap_max_batches if is_bootstrap else 1
-    current_seq = seq
-    for _ in range(max_batches):
-        batch, batch_max_seq = client.get_chat_data(current_seq, limit=batch_limit)
-        if batch:
-            fetched_messages.extend(batch)
-        if batch_max_seq > max_seq:
-            max_seq = batch_max_seq
-        if batch_max_seq <= current_seq or not batch:
-            break
-        current_seq = batch_max_seq
-    cursor.last_run_at = datetime.utcnow()
-    cursor.last_success_at = datetime.utcnow()
-    # Advance cursor based on max_seq seen (including undecryptable old messages)
-    if max_seq > seq:
-        cursor.cursor_value = str(max_seq)
-    # Persist decrypted messages into raw_message table
-    if fetched_messages:
-        _save_raw_messages(db, fetched_messages)
-        db.flush()  # make new rows visible to transform within the same transaction
-    processed = transform_pending_messages(
-        db,
-        limit=max(len(fetched_messages), 100),
-        newest_first=settings.message_sync_newest_first,
-    )
-    backfill_single_conversations(db)
-    backfill_room_conversations(db)
-    db.commit()
-    return SyncResult(fetched=len(fetched_messages), processed=processed, message="message sync completed")
+        if client is None:
+            try:
+                client = WeComArchiveClient()
+            except Exception as exc:
+                logger.error("WeComArchiveClient init failed: %s", exc)
+                return SyncResult(fetched=0, processed=0, message=f"sdk init error: {exc}")
+
+        try:
+            cursor = db.scalar(select(SyncCursor).where(SyncCursor.cursor_type == "message_seq"))
+            is_bootstrap = cursor is None
+            if cursor is None:
+                cursor = SyncCursor(cursor_type="message_seq", cursor_value="0")
+                db.add(cursor)
+                db.flush()
+            seq = int(cursor.cursor_value or "0")
+            fetched_messages = []
+            max_seq = seq
+            batch_limit = settings.message_sync_batch_limit
+            max_batches = settings.message_bootstrap_max_batches if is_bootstrap else 1
+            current_seq = seq
+            for _ in range(max_batches):
+                batch, batch_max_seq = client.get_chat_data(current_seq, limit=batch_limit)
+                if batch:
+                    fetched_messages.extend(batch)
+                if batch_max_seq > max_seq:
+                    max_seq = batch_max_seq
+                if batch_max_seq <= current_seq or not batch:
+                    break
+                current_seq = batch_max_seq
+            cursor.last_run_at = datetime.utcnow()
+            cursor.last_success_at = datetime.utcnow()
+            cursor.last_error = None
+            # Advance cursor based on max_seq seen (including undecryptable old messages)
+            if max_seq > seq:
+                cursor.cursor_value = str(max_seq)
+            # Persist decrypted messages into raw_message table
+            if fetched_messages:
+                _save_raw_messages(db, fetched_messages)
+                db.flush()  # make new rows visible to transform within the same transaction
+            processed = transform_pending_messages(
+                db,
+                limit=max(len(fetched_messages), 100),
+                newest_first=settings.message_sync_newest_first,
+            )
+            backfill_single_conversations(db)
+            backfill_room_conversations(db)
+            db.commit()
+            return SyncResult(
+                fetched=len(fetched_messages),
+                processed=processed,
+                message="message sync completed",
+            )
+        except Exception as exc:
+            logger.error("message sync failed: %s", exc)
+            _record_message_sync_failure(db, str(exc))
+            return SyncResult(fetched=0, processed=0, message=f"message sync failed: {exc}")

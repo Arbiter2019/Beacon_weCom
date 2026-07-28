@@ -18,3 +18,20 @@ def test_customer_api_secret_falls_back_to_legacy_secret(monkeypatch):
     settings = Settings()
 
     assert settings.customer_api_secret == "legacy-secret"
+
+
+def test_aliyun_oss_settings_normalize_prefix(monkeypatch):
+    monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "aliyun_oss")
+    monkeypatch.setenv("ALIYUN_OSS_ACCESS_KEY_ID", "ak")
+    monkeypatch.setenv("ALIYUN_OSS_ACCESS_KEY_SECRET", "secret")
+    monkeypatch.setenv("ALIYUN_OSS_BUCKET", "wecom-bucket")
+    monkeypatch.setenv("ALIYUN_OSS_PREFIX", "/wecom")
+    monkeypatch.setenv("ALIYUN_OSS_INTERNAL_ENDPOINT", "oss-cn-shanghai-internal.aliyuncs.com")
+    monkeypatch.setenv("ALIYUN_OSS_PUBLIC_BASE_URL", "https://wecom-bucket.oss-cn-shanghai.aliyuncs.com")
+
+    settings = Settings()
+
+    assert settings.attachment_storage_backend == "aliyun_oss"
+    assert settings.aliyun_oss_bucket == "wecom-bucket"
+    assert settings.aliyun_oss_prefix_normalized == "wecom/"
+    assert settings.aliyun_oss_internal_endpoint == "oss-cn-shanghai-internal.aliyuncs.com"

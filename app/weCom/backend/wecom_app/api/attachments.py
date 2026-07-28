@@ -1,30 +1,32 @@
-from pathlib import Path
-
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from wecom_app.core.config import Settings, get_settings
-from wecom_app.db.session import get_db
+from wecom_app.db.session import SessionLocal, get_db
 from wecom_app.models import Attachment
+from wecom_app.services.attachments import attachment_download_payload, claim_attachment_download
+from wecom_app.services.attachments import run_attachment_download_task
+from wecom_app.services.storage import get_attachment_storage
+from wecom_app.wecom.client import WeComArchiveClient
 
 router = APIRouter(prefix="/api/attachments")
 
 
-def _sniff_media_type(path: Path, attachment: Attachment) -> str | None:
-    header = path.read_bytes()[:12]
-    if header.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if header.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        return "image/webp"
-    if attachment.attachment_type == "image":
-        return "image/jpeg"
-    return None
+def _run_attachment_download_background(attachment_id: int) -> None:
+    with SessionLocal() as db:
+        try:
+            settings = get_settings()
+            storage = get_attachment_storage(settings)
+            run_attachment_download_task(db, attachment_id, WeComArchiveClient, storage)
+        except Exception as exc:
+            attachment = db.get(Attachment, attachment_id)
+            if attachment is None:
+                return
+            attachment.download_status = "failed"
+            attachment.download_error = str(exc)
+            db.commit()
 
 
 def require_attachment_token(
@@ -44,16 +46,37 @@ def attachment_content(
     _: str = Depends(require_attachment_token),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> FileResponse:
+) -> StreamingResponse:
     attachment = db.scalar(select(Attachment).where(Attachment.id == attachment_id))
     if attachment is None:
         raise HTTPException(status_code=404, detail="attachment not found")
     if attachment.download_status != "downloaded" or not attachment.storage_key:
         raise HTTPException(status_code=409, detail="attachment not downloaded")
-    path = (settings.attachment_storage_root / attachment.storage_key).resolve()
-    root = settings.attachment_storage_root.resolve()
-    if root not in path.parents and path != root:
-        raise HTTPException(status_code=403, detail="invalid storage key")
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="attachment file missing")
-    return FileResponse(Path(path), filename=attachment.file_name, media_type=_sniff_media_type(path, attachment))
+    if attachment.storage_backend != "aliyun_oss":
+        raise HTTPException(status_code=409, detail="attachment is not stored in aliyun oss")
+    storage = get_attachment_storage(settings)
+    stored = storage.open_object(attachment.storage_key)
+    headers = {}
+    if attachment.file_name:
+        headers["Content-Disposition"] = f'inline; filename="{attachment.file_name}"'
+    if stored.content_length is not None:
+        headers["Content-Length"] = str(stored.content_length)
+    return StreamingResponse(stored.chunks, media_type=stored.content_type, headers=headers)
+
+
+@router.post("/{attachment_id}/download")
+def download_attachment(
+    attachment_id: int,
+    background_tasks: BackgroundTasks,
+    _: str = Depends(require_attachment_token),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    result = claim_attachment_download(db, attachment_id)
+    if not result["found"]:
+        raise HTTPException(status_code=404, detail="attachment not found")
+    if result["claimed"]:
+        background_tasks.add_task(_run_attachment_download_background, attachment_id)
+    status_code = status.HTTP_200_OK if result["download_status"] == "downloaded" else status.HTTP_202_ACCEPTED
+    attachment = db.get(Attachment, attachment_id)
+    payload = attachment_download_payload(attachment) if attachment is not None else result
+    return JSONResponse(status_code=status_code, content=payload)

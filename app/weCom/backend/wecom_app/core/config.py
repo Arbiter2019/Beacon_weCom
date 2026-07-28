@@ -32,7 +32,15 @@ class Settings(BaseSettings):
     wecom_archive_private_key_path: Path = Path("/run/secrets/wecom_archive_private_key.pem")
     wecom_sdk_lib_dir: Path = Path("/opt/wecom_sdk")
 
-    attachment_storage_root: Path = Path("/data/wecom/attachments")
+    attachment_storage_backend: str = "aliyun_oss"
+    aliyun_oss_access_key_id: str = ""
+    aliyun_oss_access_key_secret: str = ""
+    aliyun_oss_bucket: str = ""
+    aliyun_oss_prefix: str = "wecom/"
+    aliyun_oss_internal_endpoint: str = ""
+    aliyun_oss_public_base_url: str = ""
+    aliyun_oss_connect_timeout_seconds: float = 10
+    aliyun_oss_read_timeout_seconds: float = 60
     internal_admin_token: str = Field(default="dev-admin-token")
 
     worker_poll_interval_seconds: float = 0.01
@@ -52,6 +60,11 @@ class Settings(BaseSettings):
     @property
     def customer_api_secret(self) -> str:
         return self.wecom_customer_api_secret or self.wecom_customer_secret
+
+    @property
+    def aliyun_oss_prefix_normalized(self) -> str:
+        prefix = self.aliyun_oss_prefix.strip().strip("/")
+        return f"{prefix}/" if prefix else ""
 
 
 @lru_cache

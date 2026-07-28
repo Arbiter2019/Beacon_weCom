@@ -564,6 +564,17 @@ p {
   gap: var(--space-4);
 }
 
+.load-more-row {
+  align-self: center;
+  min-height: 32px;
+  padding: 5px var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .message {
   display: grid;
   grid-template-columns: 34px minmax(0, 70%);
@@ -627,6 +638,18 @@ p {
   gap: var(--space-2);
   text-align: left;
   cursor: zoom-in;
+}
+
+.image-status-bubble {
+  cursor: default;
+}
+
+button.image-status-bubble:not(:disabled) {
+  cursor: pointer;
+}
+
+button.image-status-bubble:disabled {
+  opacity: 0.72;
 }
 
 .image-preview-bubble {

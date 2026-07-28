@@ -145,7 +145,7 @@ def _get_chat_data(lib, sdk, private_key, seq: int, limit: int) -> list:
         if ret != 0:
             raise RuntimeError(f"GetChatData error code={ret}")
         buf = sl.contents.buf
-        envelope = json.loads(buf.decode("utf-8")) if buf else {}
+        envelope = json.loads(buf.decode("utf-8"), strict=False) if buf else {}
     finally:
         lib.FreeSlice(sl)
 
@@ -175,7 +175,7 @@ def _get_chat_data(lib, sdk, private_key, seq: int, limit: int) -> list:
                 continue
             msg_buf = msg_sl.contents.buf
             if msg_buf:
-                msg = json.loads(msg_buf.decode("utf-8"))
+                msg = json.loads(msg_buf.decode("utf-8"), strict=False)
                 msg["seq"] = seq
                 messages.append(msg)
         finally:

@@ -263,6 +263,27 @@ def _upsert_customer_chat_member(db: Session, chat_id: str, member_data: dict) -
     member.last_synced_at = datetime.utcnow()
 
 
+def _sync_customer_chat_detail(
+    db: Session,
+    client: WeComCustomerClient,
+    chat_id: str,
+    errors: list[dict],
+) -> bool:
+    try:
+        detail = client.get_customer_chat(chat_id)
+    except WeComAPIError as e:
+        logger.warning("get_customer_chat failed for %s: %s", chat_id, e)
+        errors.append({"chat_id": chat_id, "error": str(e)})
+        return False
+
+    chat_data = detail.get("group_chat", {})
+    chat_data.setdefault("chat_id", chat_id)
+    _upsert_customer_chat(db, chat_data)
+    for member_data in chat_data.get("member_list", []) or []:
+        _upsert_customer_chat_member(db, chat_id, member_data)
+    return True
+
+
 def sync_customer_chats(
     db: Session,
     client: WeComCustomerClient,
@@ -304,24 +325,29 @@ def sync_customer_chats(
                     if not chat_id or chat_id in seen_chat_ids:
                         continue
                     seen_chat_ids.add(chat_id)
-                    try:
-                        detail = client.get_customer_chat(chat_id)
-                    except WeComAPIError as e:
-                        logger.warning("get_customer_chat failed for %s: %s", chat_id, e)
-                        errors.append({"chat_id": chat_id, "error": str(e)})
-                        continue
-
-                    chat_data = detail.get("group_chat", {})
-                    chat_data.setdefault("chat_id", chat_id)
-                    _upsert_customer_chat(db, chat_data)
-                    for member_data in chat_data.get("member_list", []) or []:
-                        _upsert_customer_chat_member(db, chat_id, member_data)
-                    synced_chats += 1
+                    if _sync_customer_chat_detail(db, client, chat_id, errors):
+                        synced_chats += 1
 
                 next_cursor = payload.get("next_cursor") or ""
                 if not next_cursor or next_cursor == cursor:
                     break
                 cursor = next_cursor
+
+        fallback_chat_ids = db.scalars(
+            select(CustomerChat.chat_id)
+            .join(CustomerChatMember, CustomerChatMember.chat_id == CustomerChat.chat_id)
+            .where(
+                CustomerChatMember.member_userid.in_(owner_userids),
+                CustomerChatMember.is_active.is_(True),
+            )
+            .distinct()
+        ).all()
+        for chat_id in fallback_chat_ids:
+            if chat_id in seen_chat_ids:
+                continue
+            seen_chat_ids.add(chat_id)
+            if _sync_customer_chat_detail(db, client, chat_id, errors):
+                synced_chats += 1
 
         db.commit()
         return {"synced_owners": len(owner_userids), "synced_chats": synced_chats, "errors": errors}

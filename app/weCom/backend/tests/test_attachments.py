@@ -1,18 +1,47 @@
 from datetime import datetime
 
 from wecom_app.models import Attachment, Message, RawMessage
-from wecom_app.services.attachments import backfill_image_attachments, download_pending_attachments
+from wecom_app.services.attachments import (
+    backfill_image_attachments,
+    claim_attachment_download,
+    download_pending_attachments,
+    run_attachment_download_task,
+)
 
 
-def test_download_pending_attachments_saves_image_to_local_storage(db, tmp_path):
+def test_claim_attachment_download_is_idempotent(db):
     message = db.query(Message).filter_by(msgid="msg_text_1").one()
     attachment = Attachment(
         message_id=message.id,
-        msgid="msg_image_1",
+        msgid="msg_image_claim",
         attachment_type="image",
         sdkfileid="sdk-image",
         md5sum="abc123",
-        file_size=7,
+    )
+    db.add(attachment)
+    db.commit()
+
+    first = claim_attachment_download(db, attachment.id)
+    second = claim_attachment_download(db, attachment.id)
+
+    db.refresh(attachment)
+    assert first["claimed"] is True
+    assert first["download_status"] == "downloading"
+    assert second["claimed"] is False
+    assert second["download_status"] == "downloading"
+    assert attachment.download_status == "downloading"
+
+
+def test_run_attachment_download_task_uploads_to_aliyun_oss(db):
+    message = db.query(Message).filter_by(msgid="msg_text_1").one()
+    attachment = Attachment(
+        message_id=message.id,
+        msgid="msg_image_oss",
+        attachment_type="image",
+        sdkfileid="sdk-image",
+        md5sum="abc123",
+        file_ext="jpg",
+        download_status="downloading",
     )
     db.add(attachment)
     db.commit()
@@ -22,240 +51,223 @@ def test_download_pending_attachments_saves_image_to_local_storage(db, tmp_path)
             assert sdkfileid == "sdk-image"
             return b"imgdata"
 
-    result = download_pending_attachments(db, FakeArchiveClient(), tmp_path, limit=10)
+    class FakeStorage:
+        backend = "aliyun_oss"
+        bucket = "wecom-bucket"
+        prefix = "wecom/"
+
+        def __init__(self):
+            self.objects = {}
+
+        def put_bytes(self, key, data, content_type=None):
+            self.objects[key] = (data, content_type)
+
+    storage = FakeStorage()
+
+    result = run_attachment_download_task(db, attachment.id, lambda: FakeArchiveClient(), storage)
 
     db.refresh(attachment)
-    assert result == {"processed": 1, "downloaded": 1, "failed": 0}
+    assert result["download_status"] == "downloaded"
+    assert attachment.storage_backend == "aliyun_oss"
+    assert attachment.storage_bucket == "wecom-bucket"
+    assert attachment.storage_key == f"wecom/image/2026/06/19/{attachment.id}_abc123.jpg"
+    assert storage.objects[attachment.storage_key] == (b"imgdata", "image/jpeg")
+
+
+def test_download_pending_attachments_uploads_pending_rows_to_aliyun_oss(db):
+    message = db.query(Message).filter_by(msgid="msg_text_1").one()
+    attachment = Attachment(
+        message_id=message.id,
+        msgid="msg_image_batch_oss",
+        attachment_type="image",
+        sdkfileid="sdk-image",
+        md5sum="batch123",
+        file_ext="jpg",
+        download_status="pending",
+    )
+    db.add(attachment)
+    db.commit()
+
+    class FakeArchiveClient:
+        def download_media(self, sdkfileid):
+            assert sdkfileid == "sdk-image"
+            return b"batch-img"
+
+    class FakeStorage:
+        backend = "aliyun_oss"
+        bucket = "wecom-bucket"
+        prefix = "wecom/"
+
+        def __init__(self):
+            self.objects = {}
+
+        def put_bytes(self, key, data, content_type=None):
+            self.objects[key] = (data, content_type)
+
+    storage = FakeStorage()
+
+    result = download_pending_attachments(db, lambda: FakeArchiveClient(), storage)
+
+    db.refresh(attachment)
+    assert result == {"processed": 1, "downloaded": 1, "failed": 0, "expired": 0, "skipped": 0}
     assert attachment.download_status == "downloaded"
-    assert attachment.storage_backend == "local_volume"
-    assert attachment.storage_key == f"2026/06/19/{attachment.id}_abc123.image"
-    assert (tmp_path / attachment.storage_key).read_bytes() == b"imgdata"
+    assert attachment.storage_backend == "aliyun_oss"
+    assert attachment.storage_bucket == "wecom-bucket"
+    assert attachment.storage_key in storage.objects
 
 
-def test_attachment_content_accepts_query_token(client, db, tmp_path, monkeypatch):
-    from wecom_app.core.config import get_settings
+def test_run_attachment_download_task_marks_expired_media(db):
+    message = db.query(Message).filter_by(msgid="msg_text_1").one()
+    attachment = Attachment(
+        message_id=message.id,
+        msgid="msg_image_expired_task",
+        attachment_type="image",
+        sdkfileid="sdk-expired",
+        download_status="downloading",
+    )
+    db.add(attachment)
+    db.commit()
+
+    class FakeArchiveClient:
+        def download_media(self, sdkfileid):
+            raise RuntimeError("GetMediaData error code=10010")
+
+    class FakeStorage:
+        backend = "aliyun_oss"
+        bucket = "wecom-bucket"
+        prefix = "wecom/"
+
+        def put_bytes(self, key, data, content_type=None):
+            raise AssertionError("expired media should not be uploaded")
+
+    result = run_attachment_download_task(db, attachment.id, lambda: FakeArchiveClient(), FakeStorage())
+
+    db.refresh(attachment)
+    assert result["download_status"] == "expired"
+    assert attachment.download_status == "expired"
+    assert attachment.download_error == "GetMediaData error code=10010"
+
+
+def test_attachment_content_accepts_query_token(client, db, monkeypatch):
+    from wecom_app.api import attachments as attachment_api
 
     message = db.query(Message).filter_by(msgid="msg_text_1").one()
-    storage_key = "2026/06/19/query-token.image"
-    path = tmp_path / storage_key
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b"image-data")
+    storage_key = "wecom/image/2026/06/19/query-token.image"
     attachment = Attachment(
         message_id=message.id,
         msgid="msg_query_token_image",
         attachment_type="image",
         sdkfileid="sdk-query-token",
+        storage_backend="aliyun_oss",
+        storage_bucket="wecom-bucket",
         storage_key=storage_key,
         download_status="downloaded",
     )
     db.add(attachment)
     db.commit()
 
-    class FakeSettings:
-        internal_admin_token = "dev-admin-token"
-        attachment_storage_root = tmp_path
+    class FakeStorage:
+        def open_object(self, key):
+            assert key == storage_key
+            from wecom_app.services.storage import StoredObject
 
-    client.app.dependency_overrides[get_settings] = lambda: FakeSettings()
+            return StoredObject(chunks=iter([b"image-data"]), content_type="image/jpeg")
+
+    monkeypatch.setattr(attachment_api, "get_attachment_storage", lambda settings: FakeStorage())
 
     response = client.get(f"/api/attachments/{attachment.id}/content?token=dev-admin-token")
 
     assert response.status_code == 200
     assert response.content == b"image-data"
-    client.app.dependency_overrides.pop(get_settings, None)
 
 
-def test_attachment_content_serves_image_media_type(client, db, tmp_path, monkeypatch):
-    from wecom_app.core.config import get_settings
+def test_attachment_download_endpoint_returns_202_after_claim(client, db, auth_headers, monkeypatch):
+    from wecom_app.api import attachments as attachment_api
 
     message = db.query(Message).filter_by(msgid="msg_text_1").one()
-    storage_key = "2026/06/19/photo.image"
-    path = tmp_path / storage_key
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b"\xff\xd8\xff\xe0jpeg-data")
+    attachment = Attachment(
+        message_id=message.id,
+        msgid="msg_image_endpoint",
+        attachment_type="image",
+        sdkfileid="sdk-image",
+        download_status="pending",
+    )
+    db.add(attachment)
+    db.commit()
+    calls = []
+
+    def fake_background_download(attachment_id):
+        calls.append(attachment_id)
+
+    monkeypatch.setattr(attachment_api, "_run_attachment_download_background", fake_background_download)
+
+    response = client.post(f"/api/attachments/{attachment.id}/download", headers=auth_headers)
+
+    assert response.status_code == 202
+    assert response.json()["download_status"] == "downloading"
+    assert calls == [attachment.id]
+
+
+def test_attachment_download_endpoint_does_not_duplicate_running_task(
+    client, db, auth_headers, monkeypatch
+):
+    from wecom_app.api import attachments as attachment_api
+
+    message = db.query(Message).filter_by(msgid="msg_text_1").one()
+    attachment = Attachment(
+        message_id=message.id,
+        msgid="msg_image_running",
+        attachment_type="image",
+        sdkfileid="sdk-image",
+        download_status="downloading",
+    )
+    db.add(attachment)
+    db.commit()
+    calls = []
+
+    def fake_background_download(attachment_id):
+        calls.append(attachment_id)
+
+    monkeypatch.setattr(attachment_api, "_run_attachment_download_background", fake_background_download)
+
+    response = client.post(f"/api/attachments/{attachment.id}/download", headers=auth_headers)
+
+    assert response.status_code == 202
+    assert response.json()["download_status"] == "downloading"
+    assert calls == []
+
+
+def test_attachment_content_serves_image_media_type(client, db, monkeypatch):
+    from wecom_app.api import attachments as attachment_api
+
+    message = db.query(Message).filter_by(msgid="msg_text_1").one()
+    storage_key = "wecom/image/2026/06/19/photo.image"
     attachment = Attachment(
         message_id=message.id,
         msgid="msg_jpeg_image",
         attachment_type="image",
         sdkfileid="sdk-jpeg",
+        storage_backend="aliyun_oss",
+        storage_bucket="wecom-bucket",
         storage_key=storage_key,
         download_status="downloaded",
     )
     db.add(attachment)
     db.commit()
 
-    class FakeSettings:
-        internal_admin_token = "dev-admin-token"
-        attachment_storage_root = tmp_path
+    class FakeStorage:
+        def open_object(self, key):
+            assert key == storage_key
+            from wecom_app.services.storage import StoredObject
 
-    client.app.dependency_overrides[get_settings] = lambda: FakeSettings()
+            return StoredObject(chunks=iter([b"jpeg-data"]), content_type="image/jpeg")
+
+    monkeypatch.setattr(attachment_api, "get_attachment_storage", lambda settings: FakeStorage())
 
     response = client.get(f"/api/attachments/{attachment.id}/content?token=dev-admin-token")
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/jpeg"
-    client.app.dependency_overrides.pop(get_settings, None)
-
-
-def test_download_pending_attachments_marks_failures(db, tmp_path):
-    message = db.query(Message).filter_by(msgid="msg_text_1").one()
-    attachment = Attachment(
-        message_id=message.id,
-        msgid="msg_image_2",
-        attachment_type="image",
-        sdkfileid="sdk-broken",
-    )
-    db.add(attachment)
-    db.commit()
-
-    class FakeArchiveClient:
-        def download_media(self, sdkfileid):
-            raise RuntimeError("sdk failed")
-
-    result = download_pending_attachments(db, FakeArchiveClient(), tmp_path, limit=10)
-
-    db.refresh(attachment)
-    assert result == {"processed": 1, "downloaded": 0, "failed": 1}
-    assert attachment.download_status == "failed"
-    assert attachment.download_error == "sdk failed"
-
-
-def test_download_pending_attachments_retries_failed_rows(db, tmp_path):
-    message = db.query(Message).filter_by(msgid="msg_text_1").one()
-    attachment = Attachment(
-        message_id=message.id,
-        msgid="msg_image_retry",
-        attachment_type="image",
-        sdkfileid="sdk-retry",
-        download_status="failed",
-    )
-    db.add(attachment)
-    db.commit()
-
-    class FakeArchiveClient:
-        def download_media(self, sdkfileid):
-            assert sdkfileid == "sdk-retry"
-            return b"retry-data"
-
-    result = download_pending_attachments(db, FakeArchiveClient(), tmp_path, limit=10)
-
-    db.refresh(attachment)
-    assert result == {"processed": 1, "downloaded": 1, "failed": 0}
-    assert attachment.download_status == "downloaded"
-    assert (tmp_path / attachment.storage_key).read_bytes() == b"retry-data"
-
-
-def test_download_pending_attachments_rebuilds_client_after_broken_pipe(db, tmp_path):
-    message = db.query(Message).filter_by(msgid="msg_text_1").one()
-    attachment = Attachment(
-        message_id=message.id,
-        msgid="msg_image_broken_pipe",
-        attachment_type="image",
-        sdkfileid="sdk-broken-pipe",
-    )
-    db.add(attachment)
-    db.commit()
-
-    clients = []
-
-    class BrokenClient:
-        def download_media(self, sdkfileid):
-            assert sdkfileid == "sdk-broken-pipe"
-            raise BrokenPipeError(32, "Broken pipe")
-
-        def close(self):
-            pass
-
-    class HealthyClient:
-        def download_media(self, sdkfileid):
-            assert sdkfileid == "sdk-broken-pipe"
-            return b"healthy-client-data"
-
-        def close(self):
-            pass
-
-    def client_factory():
-        client = BrokenClient() if not clients else HealthyClient()
-        clients.append(client)
-        return client
-
-    result = download_pending_attachments(db, client_factory(), tmp_path, limit=10, client_factory=client_factory)
-
-    db.refresh(attachment)
-    assert result == {"processed": 1, "downloaded": 1, "failed": 0}
-    assert len(clients) == 2
-    assert attachment.download_status == "downloaded"
-    assert (tmp_path / attachment.storage_key).read_bytes() == b"healthy-client-data"
-
-
-def test_download_pending_attachments_uses_fresh_client_per_attachment_when_factory_is_available(db, tmp_path):
-    message = db.query(Message).filter_by(msgid="msg_text_1").one()
-    first = Attachment(
-        message_id=message.id,
-        msgid="msg_image_fresh_1",
-        attachment_type="image",
-        sdkfileid="sdk-fresh-1",
-    )
-    second = Attachment(
-        message_id=message.id,
-        msgid="msg_image_fresh_2",
-        attachment_type="image",
-        sdkfileid="sdk-fresh-2",
-    )
-    db.add_all([first, second])
-    db.commit()
-
-    clients = []
-
-    class FreshClient:
-        def __init__(self, index):
-            self.index = index
-            self.calls = 0
-
-        def download_media(self, sdkfileid):
-            self.calls += 1
-            return f"{self.index}:{sdkfileid}".encode()
-
-        def close(self):
-            pass
-
-    def client_factory():
-        client = FreshClient(len(clients))
-        clients.append(client)
-        return client
-
-    result = download_pending_attachments(db, client_factory(), tmp_path, limit=10, client_factory=client_factory)
-
-    db.refresh(first)
-    db.refresh(second)
-    assert result == {"processed": 2, "downloaded": 2, "failed": 0}
-    assert len(clients) == 2
-    assert [client.calls for client in clients] == [1, 1]
-    assert first.download_status == "downloaded"
-    assert second.download_status == "downloaded"
-
-
-def test_download_pending_attachments_marks_expired_media(db, tmp_path):
-    message = db.query(Message).filter_by(msgid="msg_text_1").one()
-    attachment = Attachment(
-        message_id=message.id,
-        msgid="msg_image_expired",
-        attachment_type="image",
-        sdkfileid="sdk-expired",
-    )
-    db.add(attachment)
-    db.commit()
-
-    class FakeArchiveClient:
-        def download_media(self, sdkfileid):
-            assert sdkfileid == "sdk-expired"
-            raise RuntimeError("GetMediaData error code=10010")
-
-    result = download_pending_attachments(db, FakeArchiveClient(), tmp_path, limit=10)
-
-    db.refresh(attachment)
-    assert result == {"processed": 1, "downloaded": 0, "failed": 1}
-    assert attachment.download_status == "expired"
-    assert attachment.download_error == "GetMediaData error code=10010"
 
 
 def test_backfill_image_attachments_creates_missing_rows_for_existing_messages(db):
