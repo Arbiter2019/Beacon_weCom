@@ -8,8 +8,9 @@
 - 通过 Worker 框架按 `sync_cursor.message_seq` 进行会话拉取、转换和补偿。
 - 保存 Raw 数据、处理状态和标准化业务数据到 MySQL。
 - 支持通过 CSV 或 API 导入员工、部门和可观测员工名单，用于通讯录回调被占用或通讯录 API 尚未接入时先跑后台。
-- 前端支持按企业通讯录配置观测员工、查看观测员工会话列表、聊天时间线、当前会话搜索、详情抽屉、撤回状态、不支持消息占位和图片附件状态。
-- 附件以本地 Docker volume 为 v1 存储后端，通过后端鉴权 API 代理读取。
+- 前端支持按企业通讯录配置观测员工、查看观测员工会话列表、聊天时间线、当前会话搜索、详情抽屉、撤回状态、不支持消息占位和图片附件下载/重试状态。
+- 图片附件元数据会随消息解析入库，媒体二进制在前端点击下载后由后端上传到阿里云 OSS；浏览器不直接访问 OSS。
+- 附件通过阿里云 OSS 内网 Endpoint 存储，通过后端鉴权 API 代理读取。
 - CLI 输出回调地址、校验配置、检查健康状态和触发一次同步。
 
 ## 边界
@@ -26,7 +27,7 @@ Don't do:
 
 - 不做多企业微信主体隔离。
 - 不接入飞书/SSO 或完整多用户权限。
-- 不在 v1 生产化对象存储，字段已预留 OSS/S3/MinIO 扩展。
+- 不兼容历史本地附件卷；切换 OSS 后旧本地文件由运维清理。
 - 不完整解析语音、视频、文件、小程序、会话记录等复杂类型。
 - 不把 secret、私钥或 Linux SDK 提交进仓库。
 - CSV 导入只维护本系统员工/部门/可观测名单，不会反向写入企业微信通讯录。
@@ -93,6 +94,15 @@ alembic upgrade head
 - `MESSAGE_SYNC_BATCH_LIMIT`: SDK 单批拉取上限，默认 `1000`。
 - `MESSAGE_BOOTSTRAP_MAX_BATCHES`: 首次没有 `message_seq` 游标时最多连续拉取批次数，默认 `200`。
 - `MESSAGE_SYNC_NEWEST_FIRST`: 已拉取 Raw 消息是否按消息时间从新到旧优先解析，默认 `true`。
+- `ATTACHMENT_STORAGE_BACKEND`: 附件存储后端，目前仅支持 `aliyun_oss`。
+- `ALIYUN_OSS_ACCESS_KEY_ID`
+- `ALIYUN_OSS_ACCESS_KEY_SECRET`
+- `ALIYUN_OSS_BUCKET`
+- `ALIYUN_OSS_PREFIX`: bucket 下的对象前缀，默认 `wecom/`；实际对象会继续按类型分层，例如 `wecom/image/YYYY/MM/DD/...`。
+- `ALIYUN_OSS_INTERNAL_ENDPOINT`: 后端访问 OSS 的内网 Endpoint，例如 `oss-cn-shanghai-internal.aliyuncs.com`。
+- `ALIYUN_OSS_PUBLIC_BASE_URL`: Infra 提供的 HTTPS 访问地址，当前仅保留为配置，不返回给前端。
+- `ALIYUN_OSS_CONNECT_TIMEOUT_SECONDS`: OSS 连接超时，默认 `10`。
+- `ALIYUN_OSS_READ_TIMEOUT_SECONDS`: OSS 读取超时，默认 `60`。
 
 文件型密钥和 SDK 通过只读挂载：
 
@@ -103,7 +113,16 @@ alembic upgrade head
 
 兼容说明：旧变量 `WECOM_CUSTOMER_SECRET` 仍可作为 `WECOM_CUSTOMER_API_SECRET` 的兜底读取，但新部署建议统一使用 `WECOM_CUSTOMER_API_SECRET`，避免误解为企业微信后台存在独立的“客户联系 secret”入口。
 
-回调模块已支持企业微信加密 XML 的 `msg_signature` 校验、`Encrypt` 字段解密、CorpID 校验和基础事件字段解析。会话内容拉取依赖企业微信会话存档 Linux SDK；`./vendor/wecom_sdk` 未挂载或会话存档 Secret/私钥缺失时，Worker/API 无法拉取真实消息。
+回调模块已支持企业微信加密 XML 的 `msg_signature` 校验、`Encrypt` 字段解密、CorpID 校验和基础事件字段解析。会话内容拉取依赖企业微信会话存档 Linux SDK；`./vendor/wecom_sdk` 未挂载或会话存档 Secret/私钥缺失时，Worker/API 无法拉取真实消息或下载图片媒体。
+
+附件存储说明：
+
+- `wecom-worker` 只自动解析文本、撤回、链接和图片元数据，不自动下载图片二进制。
+- 前端对未下载图片显示 `下载图片`，对失败图片显示 `重试下载图片`，对过期媒体显示 `文件已过期/无法下载`。
+- `POST /api/attachments/{id}/download` 会在后端认领单个下载任务，未完成时返回 `202 Accepted` 和 `downloading` 状态；重复请求同一附件不会创建重复下载任务。
+- 下载任务完成后，附件状态变为 `downloaded`，前端使用 `/api/attachments/{id}/content` 获取内容。
+- 由于 OSS bucket 限内网访问，`/api/attachments/{id}/content` 会由 API 服务从 OSS 内网 Endpoint 读取并流式返回，不会把 OSS URL 暴露给浏览器。
+- 新上传对象只写阿里云 OSS，不兼容本地附件卷。
 
 消息同步说明：
 
@@ -126,6 +145,7 @@ wecomctl import employees --file employees.csv
 wecomctl sync once --type message
 wecomctl sync once --type contacts
 wecomctl sync once --type customer-chat
+wecomctl sync once --type attachments
 ```
 
 也可以用模块方式运行：
@@ -187,7 +207,9 @@ http://localhost:5173
 4. 选择一个会话后，右侧聊天区展示当前会话的消息时间线。
 5. 点击聊天区右上角搜索图标，打开 `搜索对话消息` 抽屉，可按文本、发送人、开始时间、结束时间检索。搜索范围只限当前已打开会话，不跨员工或其他会话。
 6. 点击聊天区右上角详情图标，打开会话详情抽屉，查看学员/群信息和当前查看上下文。
-7. 图片消息会打开预览弹窗；文件、语音、视频等尚未完整解析的类型会以“不支持消息”占位显示，Raw 数据仍保留在后端。
+7. 图片消息初始展示下载按钮；点击后后端下载企业微信媒体并上传 OSS，期间展示下载中，成功后展示图片并可打开预览弹窗。
+8. 图片下载失败时可点击重试；如果企业微信媒体已过期，界面会提示文件已过期/无法下载。
+9. 文件、语音、视频等尚未完整解析的类型会以“不支持消息”占位显示，Raw 数据仍保留在后端。
 
 说明：
 
