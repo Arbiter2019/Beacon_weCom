@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from wecom_app.api import attachments, callbacks, conversations, health, observable
+from wecom_app.api import analysis, attachments, callbacks, conversations, health, observable
 
 
 def create_app() -> FastAPI:
@@ -16,6 +16,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(observable.router)
     app.include_router(observable.directory_router)
+    app.include_router(analysis.analysis_router)
+    app.include_router(analysis.employee_router)
     app.include_router(conversations.router)
     app.include_router(attachments.router)
     app.include_router(callbacks.router)

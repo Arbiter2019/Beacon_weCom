@@ -1,5 +1,6 @@
 import {
   Archive,
+  BarChart3,
   Check,
   ChevronRight,
   CircleHelp,
@@ -13,6 +14,23 @@ import {
 import { ChangeEvent, UIEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  fetchAnalysisCustomerChats,
+  fetchAnalysisQuestions,
+  fetchCustomerChatSummary,
+  fetchObservedEmployeeSummary,
+  fetchQuestionCategories,
+  fetchResponseGroups
+} from './api/analysisClient';
+import type {
+  AnalysisCustomerChat,
+  AnalysisQuestion,
+  AnalysisSummary,
+  PagedResult,
+  QuestionCategory,
+  ResponseGroupSort,
+  ResponseGroupStat
+} from './api/analysisTypes';
+import {
   fetchConversations,
   fetchDirectoryEmployees,
   fetchEmployees,
@@ -22,10 +40,13 @@ import {
 } from './api/client';
 import type { Conversation, ConversationPage, DirectoryEmployee, Employee, Message, MessagePage } from './api/types';
 
-type ProductView = 'archive' | 'config';
+type ProductView = 'archive' | 'config' | 'analysisEmployee' | 'analysisGroup';
 type ConversationFilter = 'all' | 'student' | 'group';
 type MobileArchiveView = 'scope' | 'list' | 'chat';
 const assetToken = import.meta.env.VITE_INTERNAL_ADMIN_TOKEN || 'dev-admin-token';
+const defaultAnalysisUserid = 'XiaoHaiYan_3';
+const defaultAnalysisStart = '2026-07-23';
+const defaultAnalysisEnd = '2026-07-29';
 
 function fmt(value?: string | null) {
   if (!value) return '—';
@@ -77,6 +98,74 @@ function authenticatedAssetUrl(url?: string | null) {
   return `${url}${separator}token=${encodeURIComponent(assetToken)}`;
 }
 
+function emptyAnalysisSummary(): AnalysisSummary {
+  return {
+    overview: {
+      single_message_count: 0,
+      room_message_count: 0,
+      received_message_count: 0,
+      sent_message_count: 0,
+      question_count: 0,
+      avg_response_seconds: 0
+    },
+    message_trend: [],
+    message_type_distribution: [],
+    sentiment_summary: {
+      positive_count: 0,
+      neutral_count: 0,
+      negative_count: 0,
+      total_count: 0,
+      covered_room_count: 0
+    },
+    hotwords: [],
+    question_category_stats: [],
+    response_daily_stats: []
+  };
+}
+
+function formatSeconds(seconds?: number | null) {
+  if (!seconds) return '00:00';
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+}
+
+function MetricCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <article className="analysis-metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function Bars({ items }: { items: { label: string; value: number }[] }) {
+  const max = Math.max(1, ...items.map((item) => item.value));
+  return (
+    <div className="analysis-bars">
+      {items.map((item) => (
+        <div className="analysis-bar-row" key={item.label}>
+          <span>{item.label}</span>
+          <b style={{ width: `${Math.max(6, (item.value / max) * 100)}%` }} />
+          <em>{item.value}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MiniLine({ values }: { values: number[] }) {
+  const max = Math.max(1, ...values);
+  const points = values.length
+    ? values.map((value, index) => `${(index / Math.max(1, values.length - 1)) * 100},${80 - (value / max) * 60}`).join(' ')
+    : '0,80 100,80';
+  return (
+    <svg className="analysis-line" viewBox="0 0 100 90" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={points} />
+    </svg>
+  );
+}
+
 function normalizeMessagePage(page: MessagePage | Message[]): MessagePage {
   return Array.isArray(page) ? { items: page, next_cursor: null } : page;
 }
@@ -113,6 +202,40 @@ export default function App() {
   const [messageTo, setMessageTo] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [triggeringAttachmentIds, setTriggeringAttachmentIds] = useState<Set<number>>(new Set());
+  const [analysisUserid, setAnalysisUserid] = useState(defaultAnalysisUserid);
+  const [analysisStartDate, setAnalysisStartDate] = useState(defaultAnalysisStart);
+  const [analysisEndDate, setAnalysisEndDate] = useState(defaultAnalysisEnd);
+  const [analysisConversationType, setAnalysisConversationType] = useState<'all' | 'single' | 'room'>('all');
+  const [analysisSummary, setAnalysisSummary] = useState<AnalysisSummary>(emptyAnalysisSummary);
+  const [analysisQuestions, setAnalysisQuestions] = useState<PagedResult<AnalysisQuestion>>({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 50
+  });
+  const [analysisResponseGroups, setAnalysisResponseGroups] = useState<PagedResult<ResponseGroupStat>>({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 50
+  });
+  const [analysisResponseSort, setAnalysisResponseSort] = useState<ResponseGroupSort>('analysis_date');
+  const [analysisResponseOrder, setAnalysisResponseOrder] = useState<'asc' | 'desc'>('desc');
+  const [questionCategories, setQuestionCategories] = useState<QuestionCategory[]>([]);
+  const [customerChats, setCustomerChats] = useState<PagedResult<AnalysisCustomerChat>>({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 50
+  });
+  const [selectedAnalysisRoomid, setSelectedAnalysisRoomid] = useState('');
+  const [groupSummary, setGroupSummary] = useState<AnalysisSummary>(emptyAnalysisSummary);
+  const [groupQuestions, setGroupQuestions] = useState<PagedResult<AnalysisQuestion>>({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 50
+  });
   const conversationRequestRef = useRef(0);
   const messageRequestRef = useRef(0);
 
@@ -130,6 +253,87 @@ export default function App() {
   useEffect(() => {
     loadEmployees();
   }, []);
+
+  useEffect(() => {
+    fetchQuestionCategories().then((result) => setQuestionCategories(result.items.filter((item) => item.enabled)));
+  }, []);
+
+  useEffect(() => {
+    if (productView !== 'analysisEmployee') return;
+    Promise.all([
+      fetchObservedEmployeeSummary(analysisUserid, {
+        startDate: analysisStartDate,
+        endDate: analysisEndDate,
+        conversationType: analysisConversationType
+      }),
+      fetchAnalysisQuestions('employee', analysisUserid, {
+        startDate: analysisStartDate,
+        endDate: analysisEndDate,
+        page: 1,
+        pageSize: 50,
+        sort: 'msg_time',
+        order: 'desc'
+      }),
+      fetchResponseGroups(analysisUserid, {
+        startDate: analysisStartDate,
+        endDate: analysisEndDate,
+        page: 1,
+        pageSize: 50,
+        sort: analysisResponseSort,
+        order: analysisResponseOrder
+      })
+    ]).then(([summary, questionsPage, responsePage]) => {
+      setAnalysisSummary(summary);
+      setAnalysisQuestions(questionsPage);
+      setAnalysisResponseGroups(responsePage);
+    });
+  }, [
+    analysisConversationType,
+    analysisEndDate,
+    analysisResponseOrder,
+    analysisResponseSort,
+    analysisStartDate,
+    analysisUserid,
+    productView
+  ]);
+
+  useEffect(() => {
+    if (productView !== 'analysisGroup') return;
+    fetchAnalysisCustomerChats({
+      observerUserid: analysisUserid,
+      page: 1,
+      pageSize: 50
+    }).then((page) => {
+      setCustomerChats(page);
+      setSelectedAnalysisRoomid((current) => current || page.items[0]?.roomid || '');
+    });
+  }, [analysisUserid, productView]);
+
+  useEffect(() => {
+    if (productView !== 'analysisGroup' || !selectedAnalysisRoomid) return;
+    Promise.all([
+      fetchCustomerChatSummary(analysisUserid, selectedAnalysisRoomid, {
+        startDate: analysisStartDate,
+        endDate: analysisEndDate
+      }),
+      fetchAnalysisQuestions(
+        'customerChat',
+        selectedAnalysisRoomid,
+        {
+          startDate: analysisStartDate,
+          endDate: analysisEndDate,
+          page: 1,
+          pageSize: 50,
+          sort: 'msg_time',
+          order: 'desc'
+        },
+        analysisUserid
+      )
+    ]).then(([summary, questionsPage]) => {
+      setGroupSummary(summary);
+      setGroupQuestions(questionsPage);
+    });
+  }, [analysisEndDate, analysisStartDate, analysisUserid, productView, selectedAnalysisRoomid]);
 
   useEffect(() => {
     const requestId = conversationRequestRef.current + 1;
@@ -258,6 +462,18 @@ export default function App() {
     setDetailOpen(false);
     setMessageSearchOpen(false);
     setConfigStatus('请选择左侧员工后添加，或在右侧选择员工后移出。');
+  };
+
+  const openAnalysisEmployee = () => {
+    setProductView('analysisEmployee');
+    setDetailOpen(false);
+    setMessageSearchOpen(false);
+  };
+
+  const openAnalysisGroup = () => {
+    setProductView('analysisGroup');
+    setDetailOpen(false);
+    setMessageSearchOpen(false);
   };
 
   const toggleDirectorySelection = (employee: DirectoryEmployee) => {
@@ -416,6 +632,265 @@ export default function App() {
   const timeRangeInvalid =
     Boolean(messageFrom && messageTo) && new Date(messageFrom).getTime() > new Date(messageTo).getTime();
 
+  const analysisEmployeeOptions = useMemo(() => {
+    const map = new Map<string, { userid: string; name: string; department?: string }>();
+    map.set(defaultAnalysisUserid, { userid: defaultAnalysisUserid, name: '小海燕', department: '教学运营' });
+    employees.forEach((employee) => map.set(employee.userid, employee));
+    return [...map.values()];
+  }, [employees]);
+
+  const selectedGroupSummary = customerChats.items.find((item) => item.roomid === selectedAnalysisRoomid);
+
+  const renderAnalysisFilters = (mode: 'employee' | 'group') => (
+    <div className="analysis-filter-bar">
+      <label className="field">
+        <span>观测员工账号</span>
+        <select value={analysisUserid} onChange={(event) => setAnalysisUserid(event.target.value)}>
+          {analysisEmployeeOptions.map((employee) => (
+            <option value={employee.userid} key={employee.userid}>
+              {employee.userid} · {employee.name} · {employee.department || '未配置部门'}
+            </option>
+          ))}
+        </select>
+      </label>
+      {mode === 'group' ? (
+        <label className="field">
+          <span>企业微信群</span>
+          <select value={selectedAnalysisRoomid} onChange={(event) => setSelectedAnalysisRoomid(event.target.value)}>
+            {customerChats.items.map((chat) => (
+              <option value={chat.roomid} key={chat.roomid}>
+                {chat.room_name} · {chat.member_count ?? '—'} 人
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <label className="field">
+          <span>会话类型</span>
+          <select
+            value={analysisConversationType}
+            onChange={(event) => setAnalysisConversationType(event.target.value as 'all' | 'single' | 'room')}
+          >
+            <option value="all">全部</option>
+            <option value="single">私聊</option>
+            <option value="room">群聊</option>
+          </select>
+        </label>
+      )}
+      <label className="field">
+        <span>开始日期</span>
+        <input
+          min="2026-07-20"
+          type="date"
+          value={analysisStartDate}
+          onChange={(event) => setAnalysisStartDate(event.target.value)}
+        />
+      </label>
+      <label className="field">
+        <span>结束日期</span>
+        <input
+          min="2026-07-20"
+          type="date"
+          value={analysisEndDate}
+          onChange={(event) => setAnalysisEndDate(event.target.value)}
+        />
+      </label>
+      <button className="btn btn-primary" type="button">刷新</button>
+    </div>
+  );
+
+  const renderQuestionTable = (page: PagedResult<AnalysisQuestion>) => (
+    <div className="analysis-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>问题原文</th>
+            <th>问题类型</th>
+            <th>提问用户</th>
+            <th>所在群名称</th>
+            <th>消息发送时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          {page.items.length ? (
+            page.items.map((item) => (
+              <tr key={item.id}>
+                <td>{item.content_text}</td>
+                <td><span className="tag">{item.question_category_name}</span></td>
+                <td>{item.sender_display_name}</td>
+                <td>{item.room_name}</td>
+                <td className="mono">{item.msg_time || '—'}</td>
+              </tr>
+            ))
+          ) : (
+            <tr><td colSpan={5}>暂无问题明细</td></tr>
+          )}
+        </tbody>
+      </table>
+      <div className="pagination">50 条/页 · 共 {page.total} 条</div>
+    </div>
+  );
+
+  const renderSummaryPanels = (summary: AnalysisSummary, questionsPage: PagedResult<AnalysisQuestion>) => {
+    const sentiment = summary.sentiment_summary;
+    const sentimentTotal = Math.max(1, sentiment.total_count);
+    return (
+      <>
+        <section className="analysis-metric-grid">
+          <MetricCard label="私聊消息总数" value={summary.overview.single_message_count} />
+          <MetricCard label="群聊消息总数" value={summary.overview.room_message_count} />
+          <MetricCard label="收到消息总数" value={summary.overview.received_message_count} />
+          <MetricCard label="员工发送总数" value={summary.overview.sent_message_count} />
+          <MetricCard label="已分类问题数" value={summary.overview.question_count} />
+          <MetricCard label="平均响应时长" value={formatSeconds(summary.overview.avg_response_seconds)} />
+        </section>
+
+        <section className="analysis-panel">
+          <div className="analysis-panel-head">
+            <div>
+              <h3>收发消息趋势</h3>
+              <p>按 UTC+8 日期展示收到与发送消息。</p>
+            </div>
+          </div>
+          <div className="analysis-chart-grid">
+            <div className="analysis-chart-box">
+              <MiniLine values={summary.message_trend.map((item) => item.received_count + item.sent_count)} />
+              <div className="analysis-chart-caption">日期趋势 · {summary.message_trend.map((item) => item.analysis_date).join(' / ') || '暂无数据'}</div>
+            </div>
+            <div className="analysis-chart-box">
+              <Bars
+                items={summary.message_type_distribution.map((item) => ({
+                  label: item.msg_type,
+                  value: item.received_count + item.sent_count
+                }))}
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="analysis-panel">
+          <div className="analysis-panel-head">
+            <div>
+              <h3>群聊舆情与热词</h3>
+              <p>仅统计群内外部联系人文本消息。</p>
+            </div>
+            <span className="badge">覆盖 {sentiment.covered_room_count} 个群</span>
+          </div>
+          <div className="analysis-chart-grid">
+            <div className="analysis-donut">
+              <strong>{Math.round((sentiment.negative_count / sentimentTotal) * 100)}%</strong>
+              <span>负向占比</span>
+              <p>正向 {sentiment.positive_count} · 中性 {sentiment.neutral_count} · 负向 {sentiment.negative_count}</p>
+            </div>
+            <div className="analysis-hotwords">
+              {summary.hotwords.length ? summary.hotwords.map((item) => (
+                <span style={{ fontSize: `${13 + Math.min(16, item.count * 2)}px` }} key={item.word}>{item.word}</span>
+              )) : <span>暂无热词</span>}
+            </div>
+          </div>
+        </section>
+
+        <section className="analysis-panel">
+          <div className="analysis-panel-head">
+            <div>
+              <h3>群内问题分类</h3>
+              <p>只展示模型判断为问题且已分类的消息。</p>
+            </div>
+            <select aria-label="问题类型筛选">
+              <option value="">全部问题类型</option>
+              {questionCategories.map((item) => (
+                <option value={item.code} key={item.code}>{item.display_name}</option>
+              ))}
+            </select>
+          </div>
+          <Bars items={summary.question_category_stats.map((item) => ({ label: item.display_name, value: item.count }))} />
+          {renderQuestionTable(questionsPage)}
+        </section>
+      </>
+    );
+  };
+
+  const renderEmployeeAnalysis = () => (
+    <section className="analysis-view">
+      <div className="analysis-page-head">
+        <div>
+          <p className="section-title">数据统计</p>
+          <h2>观测员工账号汇总</h2>
+          <p>按观测员工账号和日期范围汇总私聊、群聊、舆情、问题分类与响应时长。</p>
+        </div>
+        <span className="scope-pill"><span className="dot" />统计日期按 UTC+8 归属</span>
+      </div>
+      {renderAnalysisFilters('employee')}
+      {renderSummaryPanels(analysisSummary, analysisQuestions)}
+      <section className="analysis-panel">
+        <div className="analysis-panel-head">
+          <div>
+            <h3>响应时间统计</h3>
+            <p>按日期展示精确响应样本的平均值、中位数和四分位数。</p>
+          </div>
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              setAnalysisResponseSort('median');
+              setAnalysisResponseOrder('desc');
+            }}
+          >
+            按中位数排序
+          </button>
+        </div>
+        <div className="analysis-response-strip">
+          {analysisSummary.response_daily_stats.map((item) => (
+            <span key={item.analysis_date}>
+              {item.analysis_date} · 中位 {formatSeconds(item.median_seconds)} · 样本 {item.sample_count}
+            </span>
+          ))}
+        </div>
+        <div className="analysis-table-wrap">
+          <table>
+            <thead>
+              <tr><th>日期</th><th>群名称</th><th>平均值</th><th>中位数</th><th>下四分位数</th><th>上四分位数</th><th>最大值</th><th>最小值</th><th>样本数</th></tr>
+            </thead>
+            <tbody>
+              {analysisResponseGroups.items.map((item) => (
+                <tr key={`${item.analysis_date}-${item.roomid}`}>
+                  <td className="mono">{item.analysis_date}</td>
+                  <td>{item.room_name}</td>
+                  <td className="mono">{formatSeconds(item.avg_seconds)}</td>
+                  <td className="mono">{formatSeconds(item.median_seconds)}</td>
+                  <td className="mono">{formatSeconds(item.q1_seconds)}</td>
+                  <td className="mono">{formatSeconds(item.q3_seconds)}</td>
+                  <td className="mono">{formatSeconds(item.max_seconds)}</td>
+                  <td className="mono">{formatSeconds(item.min_seconds)}</td>
+                  <td className="mono">{item.sample_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="pagination">服务端排序 · 共 {analysisResponseGroups.total} 条</div>
+        </div>
+      </section>
+    </section>
+  );
+
+  const renderGroupAnalysis = () => (
+    <section className="analysis-view">
+      <div className="analysis-page-head">
+        <div>
+          <p className="section-title">数据统计</p>
+          <h2>企业微信群聊统计</h2>
+          <p>按当前观测员工可见群查看单群消息活跃、舆情、热词和问题明细。</p>
+        </div>
+        <span className="scope-pill"><span className="dot" />仅展示可见群</span>
+      </div>
+      {renderAnalysisFilters('group')}
+      {selectedGroupSummary ? (
+        <div className="notice">当前群：{selectedGroupSummary.room_name} · 群主 {selectedGroupSummary.owner_name || '—'}</div>
+      ) : null}
+      {renderSummaryPanels(groupSummary, groupQuestions)}
+    </section>
+  );
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -451,7 +926,15 @@ export default function App() {
         ))}
       </nav>
 
-      <main className={`workspace ${productView === 'config' ? 'show-config' : `show-${mobileView}`}`}>
+      <main
+        className={`workspace ${
+          productView === 'config'
+            ? 'show-config'
+            : productView === 'analysisEmployee' || productView === 'analysisGroup'
+              ? 'show-analysis'
+              : `show-${mobileView}`
+        }`}
+      >
         <aside className="side-menu" aria-label="消息存档菜单">
           <div className="menu-group">
             <span className="menu-title">功能目录</span>
@@ -467,6 +950,28 @@ export default function App() {
               <button className={`menu-item ${productView === 'config' ? 'active' : ''}`} onClick={openConfig}>
                 <Settings size={17} />
                 <span>配置观测员工账号</span>
+              </button>
+            </div>
+          </div>
+          <div className="menu-group">
+            <div className="menu-parent">
+              <BarChart3 size={18} />
+              <span>数据统计</span>
+            </div>
+            <div className="menu-children">
+              <button
+                className={`menu-item ${productView === 'analysisEmployee' ? 'active' : ''}`}
+                onClick={openAnalysisEmployee}
+              >
+                <BarChart3 size={17} />
+                <span>观测员工账号汇总</span>
+              </button>
+              <button
+                className={`menu-item ${productView === 'analysisGroup' ? 'active' : ''}`}
+                onClick={openAnalysisGroup}
+              >
+                <Users size={17} />
+                <span>企业微信群聊统计</span>
               </button>
             </div>
           </div>
@@ -702,7 +1207,7 @@ export default function App() {
               </div>
             </section>
           </>
-        ) : (
+        ) : productView === 'config' ? (
           <section className="config-pane">
             <div className="config-head">
               <div className="config-title">
@@ -809,6 +1314,10 @@ export default function App() {
               </section>
             </div>
           </section>
+        ) : productView === 'analysisEmployee' ? (
+          renderEmployeeAnalysis()
+        ) : (
+          renderGroupAnalysis()
         )}
 
         <aside

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "local"
     api_base_url: str = "http://localhost:8717"
     database_url: str = "sqlite:///./wecom_archive_local.db"
+    analysis_database_url: str = ""
 
     mysql_host: str = "mysql"
     mysql_port: int = 3306
@@ -55,6 +56,17 @@ class Settings(BaseSettings):
         return (
             f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
+        )
+
+    @property
+    def effective_analysis_database_url(self) -> str:
+        if self.analysis_database_url:
+            return self.analysis_database_url
+        if self.database_url and self.database_url.startswith("sqlite"):
+            return "sqlite:///./wecom_analysis_local.db"
+        return (
+            f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
+            f"@{self.mysql_host}:{self.mysql_port}/wecom_analysis"
         )
 
     @property

@@ -19,8 +19,8 @@ services:
   wecom-api:
     platform: linux/amd64
     build:
-      context: .
-      dockerfile: Dockerfile.api
+      context: ..
+      dockerfile: weCom/Dockerfile.api
       args:
         DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.m.daocloud.io}
     command: ["uvicorn", "wecom_app.main:app", "--host", "0.0.0.0", "--port", "8717"]
@@ -37,8 +37,8 @@ services:
   wecom-worker:
     platform: linux/amd64
     build:
-      context: .
-      dockerfile: Dockerfile.api
+      context: ..
+      dockerfile: weCom/Dockerfile.api
       args:
         DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.m.daocloud.io}
     command: ["python", "-m", "wecom_app.worker"]

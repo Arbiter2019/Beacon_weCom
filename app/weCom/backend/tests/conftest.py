@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from wecom_app.core.config import get_settings
+from wecom_app.db import analysis_session
 from wecom_app.db.base import Base
 from wecom_app.db.session import get_db
 from wecom_app.main import create_app
@@ -22,6 +23,7 @@ from wecom_app.models import (
     ObservableEmployeeScope,
     RawMessage,
 )
+from analysis_app.models import Base as AnalysisBase
 
 
 @pytest.fixture()
@@ -32,6 +34,7 @@ def db() -> Generator[Session, None, None]:
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
+    AnalysisBase.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
     seed_data(session)
@@ -48,6 +51,7 @@ def client(db: Session) -> TestClient:
 
     get_settings.cache_clear()
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[analysis_session.get_analysis_db] = override_db
     return TestClient(app)
 
 

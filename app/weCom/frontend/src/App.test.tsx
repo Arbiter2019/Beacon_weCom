@@ -15,6 +15,15 @@ vi.mock('./api/client', () => ({
   updateObservableEmployee: vi.fn()
 }));
 
+vi.mock('./api/analysisClient', () => ({
+  fetchAnalysisCustomerChats: vi.fn(),
+  fetchAnalysisQuestions: vi.fn(),
+  fetchCustomerChatSummary: vi.fn(),
+  fetchObservedEmployeeSummary: vi.fn(),
+  fetchQuestionCategories: vi.fn(),
+  fetchResponseGroups: vi.fn()
+}));
+
 import {
   fetchConversations,
   fetchDirectoryEmployees,
@@ -23,6 +32,14 @@ import {
   triggerAttachmentDownload,
   updateObservableEmployee
 } from './api/client';
+import {
+  fetchAnalysisCustomerChats,
+  fetchAnalysisQuestions,
+  fetchCustomerChatSummary,
+  fetchObservedEmployeeSummary,
+  fetchQuestionCategories,
+  fetchResponseGroups
+} from './api/analysisClient';
 
 const mockedFetchEmployees = vi.mocked(fetchEmployees);
 const mockedFetchDirectoryEmployees = vi.mocked(fetchDirectoryEmployees);
@@ -30,6 +47,56 @@ const mockedFetchConversations = vi.mocked(fetchConversations);
 const mockedFetchMessages = vi.mocked(fetchMessages);
 const mockedTriggerAttachmentDownload = vi.mocked(triggerAttachmentDownload);
 const mockedUpdateObservableEmployee = vi.mocked(updateObservableEmployee);
+const mockedFetchObservedEmployeeSummary = vi.mocked(fetchObservedEmployeeSummary);
+const mockedFetchCustomerChatSummary = vi.mocked(fetchCustomerChatSummary);
+const mockedFetchAnalysisQuestions = vi.mocked(fetchAnalysisQuestions);
+const mockedFetchResponseGroups = vi.mocked(fetchResponseGroups);
+const mockedFetchAnalysisCustomerChats = vi.mocked(fetchAnalysisCustomerChats);
+const mockedFetchQuestionCategories = vi.mocked(fetchQuestionCategories);
+
+const analysisSummary = {
+  overview: {
+    single_message_count: 3,
+    room_message_count: 11,
+    received_message_count: 8,
+    sent_message_count: 6,
+    question_count: 1,
+    avg_response_seconds: 180
+  },
+  message_trend: [
+    {
+      analysis_date: '2026-07-23',
+      single_received_count: 2,
+      single_sent_count: 1,
+      room_received_count: 5,
+      room_sent_count: 3,
+      received_count: 7,
+      sent_count: 4
+    }
+  ],
+  message_type_distribution: [{ msg_type: 'text', received_count: 6, sent_count: 3 }],
+  sentiment_summary: {
+    positive_count: 1,
+    neutral_count: 2,
+    negative_count: 1,
+    total_count: 4,
+    covered_room_count: 1
+  },
+  hotwords: [{ word: '作业', count: 7 }],
+  question_category_stats: [{ code: 'course', display_name: '课程', count: 1 }],
+  response_daily_stats: [
+    {
+      analysis_date: '2026-07-23',
+      avg_seconds: 180,
+      median_seconds: 180,
+      q1_seconds: 120,
+      q3_seconds: 240,
+      min_seconds: 60,
+      max_seconds: 300,
+      sample_count: 5
+    }
+  ]
+};
 
 function messagePage(items: typeof messages, nextCursor: string | null = null) {
   return { items, next_cursor: nextCursor };
@@ -71,6 +138,55 @@ describe('App', () => {
       download_error: null
     });
     mockedUpdateObservableEmployee.mockResolvedValue({ userid: 'disabled_teacher', scope_status: 'enabled' });
+    mockedFetchObservedEmployeeSummary.mockResolvedValue(analysisSummary);
+    mockedFetchCustomerChatSummary.mockResolvedValue(analysisSummary);
+    mockedFetchAnalysisQuestions.mockResolvedValue({
+      items: [
+        {
+          id: 1,
+          content_text: '直播课几点开始？',
+          question_category: 'course',
+          question_category_name: '课程',
+          sender_display_name: '张同学',
+          room_name: '初三数学群',
+          msg_time: '2026-07-23 20:00:00'
+        }
+      ],
+      total: 1,
+      page: 1,
+      page_size: 50
+    });
+    mockedFetchResponseGroups.mockResolvedValue({
+      items: [
+        {
+          analysis_date: '2026-07-23',
+          roomid: 'chat_math',
+          room_name: '初三数学群',
+          avg_seconds: 180,
+          median_seconds: 180,
+          q1_seconds: 120,
+          q3_seconds: 240,
+          min_seconds: 60,
+          max_seconds: 300,
+          sample_count: 5
+        }
+      ],
+      total: 1,
+      page: 1,
+      page_size: 50
+    });
+    mockedFetchAnalysisCustomerChats.mockResolvedValue({
+      items: [{ roomid: 'chat_math', room_name: '初三数学群', member_count: 2, owner_name: '小王老师' }],
+      total: 1,
+      page: 1,
+      page_size: 50
+    });
+    mockedFetchQuestionCategories.mockResolvedValue({
+      items: [
+        { code: 'course', display_name: '课程', sort_order: 1, enabled: true },
+        { code: 'refund', display_name: '退费', sort_order: 2, enabled: true }
+      ]
+    });
   });
 
   it('renders employee conversations and unsupported message placeholder', async () => {
@@ -372,5 +488,37 @@ describe('App', () => {
     expect(container.querySelector('[data-message-id="msg_text"]')).not.toBeInTheDocument();
     expect(container.querySelector('[data-message-id="msg_li_teacher_current"]')).toBeInTheDocument();
     expect(screen.getAllByText('李老师当前消息').length).toBeGreaterThan(0);
+  });
+
+  it('opens observed employee analysis with default filters', async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByText('观测员工账号汇总'));
+
+    expect(screen.getByRole('heading', { name: '观测员工账号汇总' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('2026-07-23')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('2026-07-29')).toBeInTheDocument();
+    expect(mockedFetchObservedEmployeeSummary).toHaveBeenCalledWith('XiaoHaiYan_3', {
+      startDate: '2026-07-23',
+      endDate: '2026-07-29',
+      conversationType: 'all'
+    });
+    expect(screen.queryByText('未分类')).not.toBeInTheDocument();
+  });
+
+  it('requests server-side response sorting from the analysis table', async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByText('观测员工账号汇总'));
+    await userEvent.click(await screen.findByRole('button', { name: '按中位数排序' }));
+
+    expect(mockedFetchResponseGroups).toHaveBeenLastCalledWith('XiaoHaiYan_3', {
+      startDate: '2026-07-23',
+      endDate: '2026-07-29',
+      page: 1,
+      pageSize: 50,
+      sort: 'median',
+      order: 'desc'
+    });
   });
 });
