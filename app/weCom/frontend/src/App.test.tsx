@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -493,9 +493,9 @@ describe('App', () => {
   it('opens observed employee analysis with default filters', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('观测员工账号汇总'));
+    await userEvent.click(await screen.findByText('观测员工账号会话数据汇总'));
 
-    expect(screen.getByRole('heading', { name: '观测员工账号汇总' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '观测员工账号会话数据汇总' })).toBeInTheDocument();
     expect(screen.getByDisplayValue('2026-07-23')).toBeInTheDocument();
     expect(screen.getByDisplayValue('2026-07-29')).toBeInTheDocument();
     expect(mockedFetchObservedEmployeeSummary).toHaveBeenCalledWith('XiaoHaiYan_3', {
@@ -506,11 +506,56 @@ describe('App', () => {
     expect(screen.queryByText('未分类')).not.toBeInTheDocument();
   });
 
+  it('passes selected question categories to the employee analysis question query', async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByText('观测员工账号会话数据汇总'));
+    await userEvent.click(await screen.findByRole('button', { name: '课程' }));
+
+    await waitFor(() => {
+      expect(mockedFetchAnalysisQuestions).toHaveBeenLastCalledWith(
+        'employee',
+        'XiaoHaiYan_3',
+        expect.objectContaining({ questionCategories: ['course'] })
+      );
+    });
+  });
+
+  it('filters customer chat options by room name and loads the selected group summary', async () => {
+    mockedFetchAnalysisCustomerChats.mockResolvedValue({
+      items: [
+        { roomid: 'chat_english', room_name: '初二英语群', member_count: 5, owner_name: '李老师' },
+        { roomid: 'chat_math', room_name: '初三数学群', member_count: 2, owner_name: '小王老师' }
+      ],
+      total: 2,
+      page: 1,
+      page_size: 50
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByText('企业微信群聊统计'));
+    await userEvent.type(await screen.findByPlaceholderText('搜索企业微信群'), '数学');
+
+    expect(screen.getByRole('option', { name: /初三数学群/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /初二英语群/ })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('option', { name: /初三数学群/ }));
+
+    await waitFor(() => {
+      expect(mockedFetchCustomerChatSummary).toHaveBeenLastCalledWith(
+        'XiaoHaiYan_3',
+        'chat_math',
+        { startDate: '2026-07-23', endDate: '2026-07-29' }
+      );
+    });
+  });
+
   it('requests server-side response sorting from the analysis table', async () => {
     render(<App />);
 
-    await userEvent.click(await screen.findByText('观测员工账号汇总'));
-    await userEvent.click(await screen.findByRole('button', { name: '按中位数排序' }));
+    await userEvent.click(await screen.findByText('观测员工账号会话数据汇总'));
+    await userEvent.click(await screen.findByRole('button', { name: /中位/ }));
 
     expect(mockedFetchResponseGroups).toHaveBeenLastCalledWith('XiaoHaiYan_3', {
       startDate: '2026-07-23',
@@ -518,7 +563,8 @@ describe('App', () => {
       page: 1,
       pageSize: 50,
       sort: 'median',
-      order: 'desc'
+      order: 'desc',
+      roomName: undefined
     });
   });
 });
