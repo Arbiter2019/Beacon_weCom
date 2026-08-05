@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     aliyun_oss_read_timeout_seconds: float = 60
     internal_admin_token: str = Field(default="dev-admin-token")
 
-    worker_poll_interval_seconds: float = 0.01
+    worker_poll_interval_seconds: float = 60
+    contact_sync_interval_seconds: float = 1800
+    customer_chat_sync_interval_seconds: float = 1800
+    attachment_sync_interval_seconds: float = 600
     message_sync_batch_limit: int = 1000
     message_bootstrap_max_batches: int = 200
     message_sync_newest_first: bool = True

@@ -78,6 +78,15 @@ def _external_contact_display(db: Session, external_userid: str | None) -> tuple
     return contact.name or contact.external_userid, contact.avatar
 
 
+def _external_contact_name(db: Session, external_userid: str | None) -> str | None:
+    if not external_userid:
+        return None
+    contact = db.scalar(select(ExternalContact).where(ExternalContact.external_userid == external_userid))
+    if contact is None or contact.name == external_userid:
+        return None
+    return contact.name
+
+
 def _conversation_cursor(item: ConversationOut) -> str:
     return f"{item.conversation_type}:{item.external_userid or item.chat_id}"
 
@@ -458,12 +467,12 @@ def chat_detail(userid: str, chat_id: str, db: Session = Depends(get_db)) -> Cus
                 "member_userid": member.member_userid,
                 "name": (
                     member.group_nickname
+                    or member.name
                     or (
                         _employee_display(db, member.member_userid)[0]
                         if member.member_type == "employee"
-                        else _external_contact_display(db, member.member_userid)[0]
+                        else _external_contact_name(db, member.member_userid)
                     )
-                    or member.name
                     or member.member_userid
                 ),
                 "member_type": member.member_type,

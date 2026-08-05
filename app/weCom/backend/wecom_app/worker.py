@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Any
 
 from wecom_app.core.config import get_settings
 from wecom_app.db.session import SessionLocal
@@ -74,6 +75,80 @@ def run_once(task_type: str = "message") -> dict:
         raise ValueError(f"unsupported sync task: {task_type}")
 
 
+def _should_run(last_runs: dict[str, float], task_name: str, interval_seconds: float, now: float) -> bool:
+    last_run = last_runs.get(task_name)
+    return last_run is None or now - last_run >= interval_seconds
+
+
+def _skip_result(task_name: str, last_runs: dict[str, float], interval_seconds: float, now: float) -> dict:
+    last_run = last_runs.get(task_name)
+    next_run = None if last_run is None else last_run + interval_seconds
+    wait_seconds = 0 if next_run is None else max(next_run - now, 0)
+    return {
+        "task": task_name,
+        "skipped": True,
+        "reason": "interval_not_due",
+        "next_run_in_seconds": wait_seconds,
+    }
+
+
+def run_scheduled_cycle(
+    settings,
+    archive_client: WeComArchiveClient | None,
+    customer_client: WeComCustomerClient | None,
+    last_runs: dict[str, float],
+    now: float | None = None,
+) -> dict[str, Any]:
+    current_time = time.monotonic() if now is None else now
+    results: dict[str, Any] = {}
+
+    with SessionLocal() as db:
+        results["message"] = sync_messages_once(db, client=archive_client)
+
+    if customer_client is not None and _should_run(
+        last_runs, "contacts", settings.contact_sync_interval_seconds, current_time
+    ):
+        with SessionLocal() as db:
+            results["contacts"] = sync_external_contacts(db, customer_client)
+        last_runs["contacts"] = current_time
+    else:
+        results["contacts"] = _skip_result(
+            "contacts", last_runs, settings.contact_sync_interval_seconds, current_time
+        )
+
+    if customer_client is not None and _should_run(
+        last_runs, "customer-chat", settings.customer_chat_sync_interval_seconds, current_time
+    ):
+        with SessionLocal() as db:
+            results["customer-chat"] = sync_customer_chats(db, customer_client)
+        last_runs["customer-chat"] = current_time
+    else:
+        results["customer-chat"] = _skip_result(
+            "customer-chat", last_runs, settings.customer_chat_sync_interval_seconds, current_time
+        )
+
+    if archive_client is not None and _should_run(
+        last_runs, "attachments", settings.attachment_sync_interval_seconds, current_time
+    ):
+        storage = get_attachment_storage(settings)
+        with SessionLocal() as db:
+            backfill_result = backfill_image_attachments(db)
+        with SessionLocal() as db:
+            download_result = download_pending_attachments(db, WeComArchiveClient, storage)
+        results["attachments"] = {
+            "task": "attachments",
+            "backfill": backfill_result,
+            "download": download_result,
+        }
+        last_runs["attachments"] = current_time
+    else:
+        results["attachments"] = _skip_result(
+            "attachments", last_runs, settings.attachment_sync_interval_seconds, current_time
+        )
+
+    return results
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
@@ -92,38 +167,16 @@ def main() -> None:
         except Exception as exc:
             logger.error("customer api client init failed, will skip contact sync: %s", exc)
 
+    last_runs: dict[str, float] = {}
     while True:
         try:
-            with SessionLocal() as db:
-                result = sync_messages_once(db, client=client)
-            logger.info("sync result: %s", result)
+            results = run_scheduled_cycle(settings, client, customer_client, last_runs)
+            logger.info("sync result: %s", results["message"])
+            logger.info("contacts sync result: %s", results["contacts"])
+            logger.info("customer chat sync result: %s", results["customer-chat"])
+            logger.info("attachment sync result: %s", results["attachments"])
         except Exception as exc:
-            logger.error("sync cycle error: %s", exc)
-        try:
-            if customer_client is not None:
-                with SessionLocal() as db:
-                    contacts_result = sync_external_contacts(db, customer_client)
-                logger.info("contacts sync result: %s", contacts_result)
-        except Exception as exc:
-            logger.error("contacts sync cycle error: %s", exc)
-        try:
-            if customer_client is not None:
-                with SessionLocal() as db:
-                    chat_result = sync_customer_chats(db, customer_client)
-                logger.info("customer chat sync result: %s", chat_result)
-        except Exception as exc:
-            logger.error("customer chat sync cycle error: %s", exc)
-        try:
-            if client is not None:
-                with SessionLocal() as db:
-                    backfill_result = backfill_image_attachments(db)
-                logger.info("attachment backfill result: %s", backfill_result)
-                with SessionLocal() as db:
-                    storage = get_attachment_storage(settings)
-                    attachment_result = download_pending_attachments(db, WeComArchiveClient, storage)
-                logger.info("attachment download result: %s", attachment_result)
-        except Exception as exc:
-            logger.error("attachment sync cycle error: %s", exc)
+            logger.error("worker cycle error: %s", exc)
         time.sleep(settings.worker_poll_interval_seconds)
 
 

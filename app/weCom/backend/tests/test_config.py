@@ -35,3 +35,12 @@ def test_aliyun_oss_settings_normalize_prefix(monkeypatch):
     assert settings.aliyun_oss_bucket == "wecom-bucket"
     assert settings.aliyun_oss_prefix_normalized == "wecom/"
     assert settings.aliyun_oss_internal_endpoint == "oss-cn-shanghai-internal.aliyuncs.com"
+
+
+def test_worker_task_interval_defaults():
+    settings = Settings()
+
+    assert settings.worker_poll_interval_seconds == 60
+    assert settings.contact_sync_interval_seconds == 1800
+    assert settings.customer_chat_sync_interval_seconds == 1800
+    assert settings.attachment_sync_interval_seconds == 600

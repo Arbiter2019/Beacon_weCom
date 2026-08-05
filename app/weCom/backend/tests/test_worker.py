@@ -123,6 +123,131 @@ def test_run_once_attachments_backfills_metadata_then_uploads_to_oss(monkeypatch
     }
 
 
+def test_run_scheduled_cycle_skips_heavy_tasks_until_interval(monkeypatch):
+    calls = []
+
+    class FakeSettings:
+        contact_sync_interval_seconds = 1800
+        customer_chat_sync_interval_seconds = 1800
+        attachment_sync_interval_seconds = 600
+
+    class FakeSession:
+        def __enter__(self):
+            return "db"
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(
+        worker,
+        "sync_messages_once",
+        lambda db, client=None: calls.append(("message", db, client)) or "message-result",
+    )
+    monkeypatch.setattr(
+        worker,
+        "sync_external_contacts",
+        lambda db, customer_client: calls.append(("contacts", db, customer_client)),
+    )
+    monkeypatch.setattr(
+        worker,
+        "sync_customer_chats",
+        lambda db, customer_client: calls.append(("customer-chat", db, customer_client)),
+    )
+    monkeypatch.setattr(
+        worker,
+        "backfill_image_attachments",
+        lambda db: calls.append(("attachment-backfill", db)) or {"created": 0},
+    )
+
+    last_runs = {"contacts": 100.0, "customer-chat": 100.0, "attachments": 100.0}
+    results = worker.run_scheduled_cycle(
+        FakeSettings(),
+        archive_client="archive-client",
+        customer_client="customer-client",
+        last_runs=last_runs,
+        now=200.0,
+    )
+
+    assert calls == [("message", "db", "archive-client")]
+    assert results["message"] == "message-result"
+    assert results["contacts"]["skipped"] is True
+    assert results["customer-chat"]["skipped"] is True
+    assert results["attachments"]["skipped"] is True
+    assert last_runs == {"contacts": 100.0, "customer-chat": 100.0, "attachments": 100.0}
+
+
+def test_run_scheduled_cycle_runs_heavy_tasks_after_interval(monkeypatch):
+    calls = []
+
+    class FakeSettings:
+        contact_sync_interval_seconds = 1800
+        customer_chat_sync_interval_seconds = 1800
+        attachment_sync_interval_seconds = 600
+
+    class FakeSession:
+        def __enter__(self):
+            return "db"
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+    class FakeStorage:
+        pass
+
+    fake_storage = FakeStorage()
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(
+        worker,
+        "sync_messages_once",
+        lambda db, client=None: calls.append(("message", db, client)) or "message-result",
+    )
+    monkeypatch.setattr(
+        worker,
+        "sync_external_contacts",
+        lambda db, customer_client: calls.append(("contacts", db, customer_client)) or {"synced_contacts": 2},
+    )
+    monkeypatch.setattr(
+        worker,
+        "sync_customer_chats",
+        lambda db, customer_client: calls.append(("customer-chat", db, customer_client)) or {"synced_chats": 3},
+    )
+    monkeypatch.setattr(
+        worker,
+        "backfill_image_attachments",
+        lambda db: calls.append(("attachment-backfill", db)) or {"created": 1},
+    )
+    monkeypatch.setattr(
+        worker,
+        "download_pending_attachments",
+        lambda db, client_factory, storage: calls.append(("attachment-download", db, client_factory, storage))
+        or {"processed": 4},
+    )
+    monkeypatch.setattr(worker, "get_attachment_storage", lambda settings: fake_storage)
+
+    last_runs = {"contacts": 100.0, "customer-chat": 100.0, "attachments": 100.0}
+    results = worker.run_scheduled_cycle(
+        FakeSettings(),
+        archive_client="archive-client",
+        customer_client="customer-client",
+        last_runs=last_runs,
+        now=2000.0,
+    )
+
+    assert calls == [
+        ("message", "db", "archive-client"),
+        ("contacts", "db", "customer-client"),
+        ("customer-chat", "db", "customer-client"),
+        ("attachment-backfill", "db"),
+        ("attachment-download", "db", worker.WeComArchiveClient, fake_storage),
+    ]
+    assert results["contacts"]["synced_contacts"] == 2
+    assert results["customer-chat"]["synced_chats"] == 3
+    assert results["attachments"]["download"]["processed"] == 4
+    assert last_runs == {"contacts": 2000.0, "customer-chat": 2000.0, "attachments": 2000.0}
+
+
 def test_download_media_preserves_binary_index_buffer(monkeypatch):
     calls = []
     buffers = []

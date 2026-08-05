@@ -164,6 +164,38 @@ def test_group_detail_resolves_employee_and_external_member_names(db, client, au
     assert members["wm_student"]["avatar"] == "https://example.test/wm.png"
 
 
+def test_group_detail_uses_member_name_when_external_contact_is_id_fallback(db, client, auth_headers):
+    from wecom_app.models import CustomerChatMember, ExternalContact
+
+    db.add(
+        ExternalContact(
+            external_userid="wm_fallback_student",
+            name="wm_fallback_student",
+            raw_payload={"source": "message_fallback"},
+        )
+    )
+    db.add(
+        CustomerChatMember(
+            chat_id="chat_math",
+            member_userid="wm_fallback_student",
+            member_type="external_contact",
+            name="微信学员名",
+            group_nickname=None,
+            role="member",
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        "/api/observed-employees/wang_teacher/customer-chats/chat_math",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    members = {item["member_userid"]: item for item in response.json()["members"]}
+    assert members["wm_fallback_student"]["name"] == "微信学员名"
+
+
 def test_group_message_sender_uses_actual_employee_identity(db, client, auth_headers):
     from datetime import datetime
 
