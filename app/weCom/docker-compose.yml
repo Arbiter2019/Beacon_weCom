@@ -50,6 +50,43 @@ services:
       - ./secrets/wecom_archive_private_key.pem:/run/secrets/wecom_archive_private_key.pem:ro
       - ./vendor/wecom_sdk:/opt/wecom_sdk:ro
 
+  chatbi-mcp:
+    build:
+      context: ..
+      dockerfile: chatbi-mcp/Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    env_file:
+      - path: .env.chatbi-mcp
+        required: false
+    environment:
+      CHATBI_BE_BASE_URL: ${CHATBI_BE_BASE_URL:-http://wecom-api:8717}
+      CHATBI_TOKEN: ${CHATBI_TOKEN:-dev-chatbi-token}
+      CHATBI_MCP_PORT: ${CHATBI_MCP_PORT:-8731}
+    depends_on:
+      - wecom-api
+    ports:
+      - "8731:8731"
+
+  echarts-mcp:
+    build:
+      context: ..
+      dockerfile: echarts-mcp/Dockerfile
+      args:
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        NODE_DIST_MIRROR: ${NODE_DIST_MIRROR:-https://npmmirror.com/mirrors/node}
+        NODE_PRE_GYP_GITHUB_MIRROR: ${NODE_PRE_GYP_GITHUB_MIRROR:-https://npmmirror.com/mirrors}
+        PREBUILD_INSTALL_BINARY_MIRROR: ${PREBUILD_INSTALL_BINARY_MIRROR:-https://npmmirror.com/mirrors}
+        CANVAS_BINARY_HOST_MIRROR: ${CANVAS_BINARY_HOST_MIRROR:-https://npmmirror.com/mirrors/canvas}
+    env_file:
+      - path: .env.echarts-mcp
+        required: false
+    environment:
+      ECHARTS_MCP_PORT: ${ECHARTS_MCP_PORT:-8732}
+    ports:
+      - "8732:8732"
+
   wecom-frontend:
     build:
       context: .

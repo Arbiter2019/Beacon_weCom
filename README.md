@@ -59,14 +59,87 @@ npm run dev
 ```bash
 cd app/weCom
 cp .env.example .env
+cp .env.chatbi-mcp.example .env.chatbi-mcp
+cp .env.echarts-mcp.example .env.echarts-mcp
 docker compose up --build
 ```
+
+服务器已有 `mysql`、`wecom-api`、`wecom-worker`、`wecom-frontend` 时，首次增加 ChatBI 两个 MCP 服务建议执行：
+
+```bash
+docker compose up -d --build wecom-api chatbi-mcp echarts-mcp
+```
+
+其中 `chatbi-mcp`、`echarts-mcp` 是新增服务；`wecom-api` 需要包含 `/api/chatbi/*` 接口。`mysql`、`wecom-worker`、`wecom-frontend` 通常不需要重启。后续只调整 MCP 配置时，重启对应 MCP 即可；如果只改 `CHATBI_TOKEN`，需要同时重启 `wecom-api` 和 `chatbi-mcp`。
 
 服务端口：
 
 - API: `http://localhost:8717`
 - Frontend: `http://localhost:5173`
 - MySQL: `localhost:3306`
+- ChatBI MCP SSE: `http://localhost:8731/sse`
+- ECharts MCP SSE: `http://localhost:8732/sse`
+
+如果 OpenClaw 部署在同一台服务器的另一个 Docker Compose 里，推荐把两个 compose 接到同一个 Docker external network，而不是让 OpenClaw 走公网域名访问 MCP。
+
+先创建共享网络：
+
+```bash
+docker network create openclaw-shared
+```
+
+在本项目 `app/weCom/docker-compose.yml` 中把 `chatbi-mcp` 和 `echarts-mcp` 接入该网络：
+
+```yaml
+services:
+  chatbi-mcp:
+    networks:
+      - default
+      - openclaw-shared
+
+  echarts-mcp:
+    networks:
+      - default
+      - openclaw-shared
+
+networks:
+  openclaw-shared:
+    external: true
+```
+
+OpenClaw 所在 compose 也接入同一个 `openclaw-shared` 网络后，可使用容器内地址：
+
+```text
+http://chatbi-mcp:8731/sse
+http://echarts-mcp:8732/sse
+```
+
+如果 WeCom 和 OpenClaw 都已经在服务器上跑起来，不想立即改 compose，也可以把已运行的 MCP 容器临时接入 OpenClaw 网络：
+
+```bash
+cd app/weCom
+
+# 先找到 OpenClaw 所在 Docker network，例如 openclaw_default。
+docker network ls
+
+# 再找到两个 MCP 容器名。
+docker compose ps chatbi-mcp echarts-mcp
+
+# 把 MCP 容器接入 OpenClaw network，并设置稳定别名。
+docker network connect --alias chatbi-mcp <openclaw-network> <chatbi-mcp-container>
+docker network connect --alias echarts-mcp <openclaw-network> <echarts-mcp-container>
+```
+
+接入后，在 OpenClaw 容器内应能访问：
+
+```bash
+curl http://chatbi-mcp:8731/health
+curl http://echarts-mcp:8732/health
+```
+
+临时 `docker network connect` 在容器重建后需要重新执行；长期部署建议把两个 compose 都显式接入同一个 external network。
+
+如果暂时不改 Docker 网络，也可以通过宿主机端口访问，例如 Linux Docker 中配置 `host.docker.internal` 到 host gateway 后访问 `http://host.docker.internal:8731/sse` 和 `http://host.docker.internal:8732/sse`。
 
 数据库迁移：
 
@@ -103,6 +176,54 @@ alembic upgrade head
 - `ALIYUN_OSS_PUBLIC_BASE_URL`: Infra 提供的 HTTPS 访问地址，当前仅保留为配置，不返回给前端。
 - `ALIYUN_OSS_CONNECT_TIMEOUT_SECONDS`: OSS 连接超时，默认 `10`。
 - `ALIYUN_OSS_READ_TIMEOUT_SECONDS`: OSS 读取超时，默认 `60`。
+- `CHATBI_TOKEN`: ChatBI 专用接口静态 token，BE 和 `chatbi-mcp` 需保持一致。
+- `APT_MIRROR`: Docker 构建 `echarts-mcp` 时使用的 Debian apt 镜像域名，默认 `mirrors.aliyun.com`。
+- `NPM_REGISTRY`: Docker 构建两个 MCP 时使用的 npm registry，默认 `https://registry.npmmirror.com`。
+
+ChatBI MCP 配置写入 `app/weCom/.env.chatbi-mcp`：
+
+- `CHATBI_BE_BASE_URL`: `chatbi-mcp` 调用 BE 的地址，Docker 内默认 `http://wecom-api:8717`。
+- `CHATBI_TOKEN`: 透传到 BE 的静态 token，需与 BE `.env` 中的 `CHATBI_TOKEN` 一致。
+- `CHATBI_MCP_PORT`: `chatbi-mcp` 监听端口，默认 `8731`。
+
+示例：
+
+```env
+CHATBI_BE_BASE_URL=http://wecom-api:8717
+CHATBI_TOKEN=<same-static-token-as-wecom-api>
+CHATBI_MCP_PORT=8731
+```
+
+注意：`CHATBI_TOKEN` 必须配置两处，且值完全一致：
+
+- `app/weCom/.env`: 给 `wecom-api` 校验 `X-ChatBI-Token` 使用。
+- `app/weCom/.env.chatbi-mcp`: 给 `chatbi-mcp` 调用 BE 时透传 header 使用。
+
+ECharts MCP 配置写入 `app/weCom/.env.echarts-mcp`：
+
+- `ECHARTS_MCP_PORT`: `echarts-mcp` 监听端口，默认 `8732`。
+- `CHART_OSS_ACCESS_KEY_ID`
+- `CHART_OSS_ACCESS_KEY_SECRET`
+- `CHART_OSS_BUCKET`
+- `CHART_OSS_PREFIX`: bucket 下的对象前缀，例如 `wecom/`；图表对象会写到 `wecom/charts/YYYY/MM/DD/...`。
+- `CHART_OSS_ENDPOINT`: 例如 `oss-cn-shanghai.aliyuncs.com`。
+- `CHART_OSS_REGION`: 例如 `oss-cn-shanghai`。
+- `CHART_OSS_PUBLIC_BASE_URL`: 图表图片对 OpenClaw/飞书可访问的 HTTPS 前缀；如果 `CHART_OSS_PREFIX=wecom/`，这里建议写到同一层公开前缀，例如 `https://res.jhpy.com/wecom/`；为空时使用 OSS SDK 返回的 URL。
+
+示例：
+
+```env
+ECHARTS_MCP_PORT=8732
+CHART_OSS_ACCESS_KEY_ID=<aliyun-oss-access-key-id>
+CHART_OSS_ACCESS_KEY_SECRET=<aliyun-oss-access-key-secret>
+CHART_OSS_BUCKET=jhjy-prod
+CHART_OSS_PREFIX=wecom/
+CHART_OSS_ENDPOINT=oss-cn-shanghai-internal.aliyuncs.com
+CHART_OSS_REGION=oss-cn-shanghai
+CHART_OSS_PUBLIC_BASE_URL=https://res.jhpy.com/wecom/
+```
+
+`CHART_OSS_ENDPOINT=oss-cn-shanghai-internal.aliyuncs.com` 只适用于 `echarts-mcp` 所在服务器可访问阿里云上海地域 OSS 内网 Endpoint 的场景；否则改用公网 Endpoint `oss-cn-shanghai.aliyuncs.com`。OSS 不需要访问 `8732`，`8732` 只需要对 OpenClaw 容器可达。
 
 文件型密钥和 SDK 通过只读挂载：
 

@@ -94,7 +94,7 @@ def test_llm_smoke_command_prints_success(monkeypatch):
 def test_llm_smoke_command_exits_nonzero_on_error(monkeypatch):
     settings = SimpleNamespace(
         llm_provider="qwen",
-        llm_model="kimi-k2.6",
+        llm_model="kimi/kimi-k2.5",
         llm_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
 

@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     aliyun_oss_connect_timeout_seconds: float = 10
     aliyun_oss_read_timeout_seconds: float = 60
     internal_admin_token: str = Field(default="dev-admin-token")
+    chatbi_token: str = Field(default="dev-chatbi-token")
 
     worker_poll_interval_seconds: float = 60
     contact_sync_interval_seconds: float = 1800

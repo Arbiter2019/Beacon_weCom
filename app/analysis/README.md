@@ -55,66 +55,101 @@ PYTHONPATH=.:../weCom/backend python -m analysis_app.cli rollback --start-date 2
 
 ## 环境变量
 
-分析模块不会读取 `app/weCom/.env` 文件本身；部署时需要把下列环境变量导出到当前 shell、cron 脚本或 systemd unit 中。
+分析模块启动时会自动读取 `app/analysis/.env`。进程里已经 `export` 的环境变量优先级更高，可以临时覆盖 `.env` 中的值。
 
-### 必填
+`PYTHONPATH` 不放在 `.env` 里维护。它用于让 Python 在导入阶段找到 `analysis_app` 和现有后端的 `wecom_app.models`，需要继续放在 shell、cron 脚本或 systemd unit 中：
 
 ```bash
 export PYTHONPATH="/home/share-user/app/analysis:/home/share-user/app/weCom/backend"
+```
 
-export ARCHIVE_DATABASE_URL="mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_archive"
-export ANALYSIS_DATABASE_URL="mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_analysis"
+首次配置可从示例文件复制：
+
+```bash
+cd /home/share-user/app/analysis
+cp .env.example .env
+```
+
+然后编辑 `app/analysis/.env`。不要提交真实 `.env`，仓库只提交 `.env.example`。
+
+### 必填
+
+```dotenv
+ARCHIVE_DATABASE_URL=mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_archive
+ANALYSIS_DATABASE_URL=mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_analysis
 ```
 
 说明：
 
-- `PYTHONPATH` 需要同时包含分析模块和现有后端模块，因为分析代码复用 `wecom_app.models`。
 - `ARCHIVE_DATABASE_URL` 读取现有归档库。
 - `ANALYSIS_DATABASE_URL` 写入独立分析库。
 - `<MYSQL_PASSWORD>` 沿用 `app/weCom/.env` 中的 `MYSQL_PASSWORD`。
 - 在宿主机执行时 MySQL host 使用 `127.0.0.1`；如果在 Docker 网络内执行，host 使用 `mysql`。
+- 如果密码包含 `@`、`/`、`:`、`#`、`?` 等 URL 特殊字符，需要先做 URL encode 后再写入连接串。
 
 ### LLM 任务配置
 
 如果执行默认全量任务，会包含舆情和问题分类，因此需要配置 `LLM_API_KEY`。如果暂时不配置 LLM，只运行 `snapshot/basic/response/hotwords` 即可。
 
-```bash
-export LLM_PROVIDER="qwen"
-export LLM_API_KEY="sk-ws-H.EMDMXYE.VByF.MEYCIQDhkCyDWdho9oyNZgSQaTSwsi9UOjJfKAq_Ulq62M4BdQIhAPbZo3PCPq9_ALRmJpyp5VfEiLFUXYmS7SHw3DDojFhr"
-export LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-export LLM_MODEL="kimi-k2.6"
-export LLM_MAX_TOKENS="2048"
-export LLM_TEMPERATURE="0.1"
-export LLM_TIMEOUT_SECONDS="60"
-export LLM_MAX_RETRIES="3"
+```dotenv
+LLM_PROVIDER=qwen
+LLM_API_KEY=<你的阿里云百炼 API Key>
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=kimi/kimi-k2.5
+LLM_MAX_TOKENS=2048
+LLM_TEMPERATURE=0.1
+LLM_TIMEOUT_SECONDS=60
+LLM_MAX_RETRIES=3
+LLM_RESPONSE_FORMAT=json_object
+LLM_ENABLE_THINKING=false
 ```
+
+说明：
+
+- `LLM_RESPONSE_FORMAT=json_object` 会在 OpenAI 兼容请求体里加入 `response_format: {"type": "json_object"}`。
+- `LLM_ENABLE_THINKING=false` 会在请求体里加入 `enable_thinking: false`。JSON Mode 和 thinking 同时开启时，百炼可能拒绝请求。
+- 如果当前模型不支持 JSON Mode，可把 `LLM_RESPONSE_FORMAT` 留空，代码仍会做 JSON 解析、结构校验和最多 3 次重试。
+- LLM JSON 解析失败、结构校验失败或 HTTP 请求失败都会重试，重试次数由 `LLM_MAX_RETRIES` 控制；例如 `LLM_MAX_RETRIES=3` 表示 1 次初始请求加最多 3 次重试。
+- 每次失败会通过标准日志输出 task、attempt、model、错误信息和 LLM 原始返回摘要。cron 的 `2>&1` 会把这些日志写入每日日志文件。
+
+### LLM 连通性测试
+
+不要把真实 API Key 发到聊天窗口，也不要写进代码或 README。服务器上把 `LLM_API_KEY` 写入 `app/analysis/.env` 后执行：
+
+```bash
+python -m analysis_app.cli llm-smoke
+```
+
+成功时会输出 `ok: true`。失败时会输出 `ok: false`、当前 provider/model/base_url 和错误信息，并以非 0 状态退出。
 
 ### 分析运行配置
 
-```bash
-export ANALYSIS_TIMEZONE="Asia/Shanghai"
-export ANALYSIS_MAX_WORKERS="4"
-export HOTWORD_STOPWORDS_PATH="/home/share-user/app/analysis/config/hotword_stopwords.txt"
+```dotenv
+ANALYSIS_TIMEZONE=Asia/Shanghai
+ANALYSIS_MAX_WORKERS=4
+HOTWORD_STOPWORDS_PATH=/home/share-user/app/analysis/config/hotword_stopwords.txt
 ```
-> HOTWORD_STOPWORDS_PATH 可选
+
+`HOTWORD_STOPWORDS_PATH` 可选；不配置时会使用代码内置停用词。
 
 ### 可复制示例
 
-```bash
-export PYTHONPATH="/home/share-user/app/analysis:/home/share-user/app/weCom/backend"
-export ARCHIVE_DATABASE_URL="mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_archive"
-export ANALYSIS_DATABASE_URL="mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_analysis"
-export LLM_PROVIDER="qwen"
-export LLM_API_KEY="<你的阿里云DashScope API Key>"
-export LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-export LLM_MODEL="kimi-k2.6"
-export LLM_MAX_TOKENS="2048"
-export LLM_TEMPERATURE="0.1"
-export LLM_TIMEOUT_SECONDS="60"
-export LLM_MAX_RETRIES="3"
-export ANALYSIS_TIMEZONE="Asia/Shanghai"
-export ANALYSIS_MAX_WORKERS="4"
-export HOTWORD_STOPWORDS_PATH="/home/share-user/app/analysis/config/hotword_stopwords.txt"
+```dotenv
+ARCHIVE_DATABASE_URL=mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_archive
+ANALYSIS_DATABASE_URL=mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_analysis
+LLM_PROVIDER=qwen
+LLM_API_KEY=<你的阿里云百炼 API Key>
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=kimi/kimi-k2.5
+LLM_MAX_TOKENS=2048
+LLM_TEMPERATURE=0.1
+LLM_TIMEOUT_SECONDS=60
+LLM_MAX_RETRIES=3
+LLM_RESPONSE_FORMAT=json_object
+LLM_ENABLE_THINKING=false
+ANALYSIS_TIMEZONE=Asia/Shanghai
+ANALYSIS_MAX_WORKERS=4
+HOTWORD_STOPWORDS_PATH=/home/share-user/app/analysis/config/hotword_stopwords.txt
 ```
 
 ## 部署命令
@@ -157,23 +192,28 @@ cd /Users/xuwei/Desktop/morpheus/Projects/Beacon/WeCom/app/weCom
 docker compose exec mysql sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS wecom_analysis CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci; GRANT ALL PRIVILEGES ON wecom_analysis.* TO '\''$MYSQL_USER'\''@'\''%'\''; FLUSH PRIVILEGES;"'
 ```
 
-4. 配置分析模块连接串。密码沿用 `app/weCom/.env` 中的 `MYSQL_PASSWORD`：
+4. 配置分析模块 `.env`。密码沿用 `app/weCom/.env` 中的 `MYSQL_PASSWORD`：
 
 ```bash
-export ARCHIVE_DATABASE_URL="mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_archive"
-export ANALYSIS_DATABASE_URL="mysql+pymysql://wecom:<MYSQL_PASSWORD>@127.0.0.1:3306/wecom_analysis"
+cd /home/share-user/app/analysis
+cp .env.example .env
+vim .env
 ```
+
+至少需要填入 `ARCHIVE_DATABASE_URL`、`ANALYSIS_DATABASE_URL`。如果要跑 LLM 任务，还需要填入 `LLM_API_KEY`。
 
 如果在 Docker 网络内执行，host 使用 `mysql`；如果在宿主机执行，host 使用 `127.0.0.1`。
 
 5. 安装并 smoke test：
 
 ```bash
-cd app/analysis
+cd /home/share-user/app/analysis
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+export PYTHONPATH="/home/share-user/app/analysis:/home/share-user/app/weCom/backend"
+python -m analysis_app.cli llm-smoke
 python -m analysis_app.cli run --start-date 2026-07-21 --end-date 2026-07-21
 ```
 
@@ -186,20 +226,47 @@ apt install -y python3-venv
 
 ### 日常部署 / 手动执行
 
-如果从仓库根目录执行，也可以先设置：
+日常只需要维护 `app/analysis/.env`，并在启动 shell、cron 或 systemd unit 里保留 `PYTHONPATH`：
 
 ```bash
-export PYTHONPATH="/Users/xuwei/Desktop/morpheus/Projects/Beacon/WeCom/app/analysis:/Users/xuwei/Desktop/morpheus/Projects/Beacon/WeCom/app/weCom/backend"
+export PYTHONPATH="/home/share-user/app/analysis:/home/share-user/app/weCom/backend"
+cd /home/share-user/app/analysis
+. .venv/bin/activate
+python -m analysis_app.cli run --start-date 2026-07-21 --end-date 2026-07-21
 ```
 
-热词停用词文件建议显式配置为项目内文件：
+### Cron 定时任务
+
+推荐每天北京时间凌晨 1 点跑昨天的分析任务，并把 stdout/stderr 追加到按日期拆分的日志文件：
 
 ```bash
-export HOTWORD_STOPWORDS_PATH="/home/share-user/app/analysis/config/hotword_stopwords.txt"
+crontab -e
+```
+
+写入全量任务：
+
+```cron
+SHELL=/bin/bash
+CRON_TZ=Asia/Shanghai
+
+0 1 * * * cd /home/share-user/app/analysis && mkdir -p logs && export PYTHONPATH="/home/share-user/app/analysis:/home/share-user/app/weCom/backend" && . /home/share-user/app/analysis/.venv/bin/activate && YDAY=$(/bin/date -d yesterday +\%F) && { echo "===== analysis start $(date '+\%F \%T') target=${YDAY} ====="; python -m analysis_app.cli run --start-date "${YDAY}" --end-date "${YDAY}"; status=$?; echo "===== analysis end $(date '+\%F \%T') target=${YDAY} exit=${status} ====="; exit ${status}; } >> "logs/analysis-${YDAY}.log" 2>&1
+```
+
+如果 LLM 暂时没有调通，可以先配置非 LLM 定时任务：
+
+```cron
+SHELL=/bin/bash
+CRON_TZ=Asia/Shanghai
+
+0 1 * * * cd /home/share-user/app/analysis && mkdir -p logs && export PYTHONPATH="/home/share-user/app/analysis:/home/share-user/app/weCom/backend" && . /home/share-user/app/analysis/.venv/bin/activate && YDAY=$(/bin/date -d yesterday +\%F) && { echo "===== analysis start $(date '+\%F \%T') target=${YDAY} tasks=non-llm ====="; python -m analysis_app.cli run --start-date "${YDAY}" --end-date "${YDAY}" --task snapshot --task basic --task response --task hotwords; status=$?; echo "===== analysis end $(date '+\%F \%T') target=${YDAY} exit=${status} ====="; exit ${status}; } >> "logs/analysis-${YDAY}.log" 2>&1
 ```
 
 ## Danger Zone
 
+- `.env` 会包含数据库密码和 LLM Key，只保留在线上机器，不要提交真实 `.env`。
+- `.env` 不负责 `PYTHONPATH`，cron/systemd/shell 仍需要设置 `PYTHONPATH`。
+- 百炼 JSON Mode 依赖模型能力；如果模型不支持，清空 `LLM_RESPONSE_FORMAT` 后仍可依赖代码层重试和校验。
+- LLM 失败日志会包含模型原始返回摘要，不要把包含敏感业务内容的日志外传。
 - `message.msg_time` 存的是 UTC naive 时间，不能直接按 `DATE(msg_time)` 当北京时间切天。
 - 群聊统计允许重复计数，同一条群消息会归属到多个被观测员工。
 - LLM 只接受结构化 JSON；不要把自然语言解释当作模型输出。

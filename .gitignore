@@ -8,6 +8,8 @@ bugs_Feedback/
 icon.png
 retrospective_20260717.md
 app/weCom/.env
+app/weCom/.env.chatbi-mcp
+app/weCom/.env.echarts-mcp
 app/weCom/backend/*.db
 app/weCom/backend/**/__pycache__/
 app/weCom/backend/**/*.pyc

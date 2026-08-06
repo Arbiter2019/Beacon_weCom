@@ -17,14 +17,23 @@ class AnalysisSettings:
     llm_provider: str = "qwen"
     llm_api_key: str = ""
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    llm_model: str = "kimi-k2.6"
+    llm_model: str = "kimi/kimi-k2.5"
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.1
     llm_timeout_seconds: int = 60
     llm_max_retries: int = 3
+    llm_response_format: str = ""
+    llm_enable_thinking: bool | None = None
     analysis_timezone: str = "Asia/Shanghai"
     analysis_max_workers: int = 4
     hotword_stopwords_path: str | None = None
+
+
+def _bool_env(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_settings() -> AnalysisSettings:
@@ -41,11 +50,13 @@ def load_settings() -> AnalysisSettings:
         llm_provider=os.getenv("LLM_PROVIDER", "qwen"),
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        llm_model=os.getenv("LLM_MODEL", "kimi-k2.6"),
+        llm_model=os.getenv("LLM_MODEL", "kimi/kimi-k2.5"),
         llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "2048")),
         llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
         llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "60")),
         llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
+        llm_response_format=os.getenv("LLM_RESPONSE_FORMAT", ""),
+        llm_enable_thinking=_bool_env("LLM_ENABLE_THINKING"),
         analysis_timezone=os.getenv("ANALYSIS_TIMEZONE", "Asia/Shanghai"),
         analysis_max_workers=int(os.getenv("ANALYSIS_MAX_WORKERS", "4")),
         hotword_stopwords_path=os.getenv("HOTWORD_STOPWORDS_PATH") or None,
