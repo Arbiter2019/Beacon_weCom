@@ -21,3 +21,8 @@ app/weCom/frontend/.vite/
 app/weCom/secrets/
 app/weCom/vendor/wecom_sdk/
 app/weCom/PRD.mdq
+
+app/analysis/**/__pycache__/
+app/analysis/**/*.pyc
+app/analysis/.pytest_cache/
+app/*-mcp/node_modules/
